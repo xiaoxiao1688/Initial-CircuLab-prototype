@@ -11,7 +11,11 @@
     progress: loadProgress(),
     instanceSeed: 0,
     pendingWireStart: null,
-    dragState: null
+    dragState: null,
+    isRunning: false,
+    switchStates: {},
+    mousePosition: { x: 0, y: 0 },
+    hoveredPort: null
   };
 
   const refs = {
@@ -32,7 +36,8 @@
     boardCanvas: document.querySelector("#board-canvas"),
     boardComponents: document.querySelector("#board-components"),
     wireLayer: document.querySelector("#wire-layer"),
-    wiringStatus: document.querySelector("#wiring-status")
+    wiringStatus: document.querySelector("#wiring-status"),
+    boardToolbar: document.querySelector(".board-toolbar")
   };
 
   document.querySelector("#jump-to-lab").addEventListener("click", () => {
@@ -44,6 +49,17 @@
   document.querySelector("#cancel-wire").addEventListener("click", cancelPendingWire);
   document.querySelector("#reset-board").addEventListener("click", () => bootstrapLevel(getActiveLevel()));
   window.addEventListener("resize", renderWires);
+
+  refs.boardCanvas.addEventListener("mousemove", (event) => {
+    const boardRect = refs.boardCanvas.getBoundingClientRect();
+    state.mousePosition = {
+      x: event.clientX - boardRect.left,
+      y: event.clientY - boardRect.top
+    };
+    if (state.pendingWireStart) {
+      requestAnimationFrame(renderWires);
+    }
+  });
 
   renderLessons();
   renderLevels();
@@ -99,9 +115,15 @@
     state.pendingWireStart = null;
     state.dragState = null;
     state.connections = [];
-    state.placedComponents = level.starterComponents.map((componentId, index) =>
-      createInstance(componentId, getStarterPosition(index))
-    );
+    state.isRunning = false;
+    state.switchStates = {};
+    state.placedComponents = level.starterComponents.map((componentId, index) => {
+      const instance = createInstance(componentId, getStarterPosition(index));
+      if (componentId === "switch") {
+        state.switchStates[instance.instanceId] = true;
+      }
+      return instance;
+    });
 
     refs.levelTitle.textContent = level.title;
     refs.levelDescription.textContent = level.description;
@@ -112,6 +134,12 @@
     refs.feedbackFail.innerHTML = "";
     refs.feedbackBadge.textContent = "待验证";
     refs.feedbackBadge.className = "badge";
+    
+    refs.boardCanvas.classList.remove("is-running");
+    if (refs.boardToolbar) {
+      refs.boardToolbar.classList.remove("is-running");
+    }
+
     updateWiringStatus();
     renderPalette(level);
     renderPlacedComponents();
@@ -134,7 +162,11 @@
         component.tags.map((tag) => `<span class="badge">${tag}</span>`).join("") +
         (isRecommended ? '<span class="badge is-success">推荐</span>' : "");
       fragment.querySelector("button").addEventListener("click", () => {
-        state.placedComponents.push(createInstance(component.id, getDropPosition()));
+        const instance = createInstance(component.id, getDropPosition());
+        if (component.id === "switch") {
+          state.switchStates[instance.instanceId] = true;
+        }
+        state.placedComponents.push(instance);
         renderPlacedComponents();
         renderBoard();
       });
@@ -208,12 +240,21 @@
     element.style.top = `${component.y}px`;
     element.dataset.instanceId = component.instanceId;
 
+    if (state.isRunning) {
+      element.classList.add("is-running");
+    }
+
     const leftPorts = component.ports.slice(0, 1);
     const rightPorts = component.ports.slice(1);
     if (rightPorts.length === 0) {
       rightPorts.push(component.ports[0]);
       leftPorts.length = 0;
     }
+
+    const symbolClass = getSymbolClass(component.id);
+    const switchIndicator = component.id === "switch" 
+      ? `<div class="switch-indicator ${state.switchStates[component.instanceId] ? 'is-closed' : ''}" data-instance-id="${component.instanceId}"></div>`
+      : '';
 
     element.innerHTML = `
       <div class="board-component__header">
@@ -227,7 +268,7 @@
         <div class="port-stack port-stack--left">${leftPorts
           .map((port) => createPortButton(component, port))
           .join("")}</div>
-        <div class="component-symbol">${getComponentSymbol(component.id)}</div>
+        <div class="component-symbol ${symbolClass}">${getComponentSymbol(component.id)}${switchIndicator}</div>
         <div class="port-stack port-stack--right">${rightPorts
           .map((port) => createPortButton(component, port))
           .join("")}</div>
@@ -244,10 +285,36 @@
         event.stopPropagation();
         handlePortClick(button.dataset.portRef);
       });
+
+      button.addEventListener("mouseenter", (event) => {
+        state.hoveredPort = button.dataset.portRef;
+        button.classList.add("is-hovered");
+        if (state.pendingWireStart) {
+          requestAnimationFrame(renderWires);
+        }
+      });
+
+      button.addEventListener("mouseleave", (event) => {
+        state.hoveredPort = null;
+        button.classList.remove("is-hovered");
+        if (state.pendingWireStart) {
+          requestAnimationFrame(renderWires);
+        }
+      });
     });
 
+    const switchIndicatorEl = element.querySelector(".switch-indicator");
+    if (switchIndicatorEl) {
+      switchIndicatorEl.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleSwitch(component.instanceId);
+      });
+    }
+
     element.addEventListener("pointerdown", (event) => {
-      if (event.target.closest(".port-button") || event.target.closest(".board-component__remove")) {
+      if (event.target.closest(".port-button") || 
+          event.target.closest(".board-component__remove") ||
+          event.target.closest(".switch-indicator")) {
         return;
       }
 
@@ -288,6 +355,24 @@
     element.addEventListener("pointercancel", endDrag);
 
     return element;
+  }
+
+  function getSymbolClass(componentId) {
+    if (!state.isRunning) return "";
+    if (componentId === "led") return "is-lit-led";
+    if (componentId === "lamp") return "is-lit-lamp";
+    if (componentId === "battery") return "is-lit";
+    return "";
+  }
+
+  function toggleSwitch(instanceId) {
+    state.switchStates[instanceId] = !state.switchStates[instanceId];
+    const indicator = refs.boardComponents.querySelector(
+      `.switch-indicator[data-instance-id="${instanceId}"]`
+    );
+    if (indicator) {
+      indicator.classList.toggle("is-closed", state.switchStates[instanceId]);
+    }
   }
 
   function handlePortClick(portRef) {
@@ -364,9 +449,19 @@
       saveProgress();
       renderLevels();
       renderProgress();
+      enterRunningState();
     }
 
     setFeedback(result);
+  }
+
+  function enterRunningState() {
+    state.isRunning = true;
+    refs.boardCanvas.classList.add("is-running");
+    if (refs.boardToolbar) {
+      refs.boardToolbar.classList.add("is-running");
+    }
+    renderBoard();
   }
 
   function setFeedback(result) {
@@ -389,6 +484,7 @@
     if (state.pendingWireStart && state.pendingWireStart.startsWith(instanceId)) {
       state.pendingWireStart = null;
     }
+    delete state.switchStates[instanceId];
     updateWiringStatus();
     renderPlacedComponents();
     renderConnections();
@@ -415,25 +511,92 @@
         return;
       }
 
-      refs.wireLayer.appendChild(createWirePath(from, to, false));
+      const fromSide = getPortSide(connection.from);
+      const toSide = getPortSide(connection.to);
+      
+      const path = createOptimizedWirePath(from, to, fromSide, toSide, false);
+      if (state.isRunning) {
+        path.classList.add("is-powered");
+      }
+      refs.wireLayer.appendChild(path);
     });
 
     if (state.pendingWireStart) {
       const start = getPortCenter(state.pendingWireStart, boardRect);
       if (start) {
-        const previewEnd = { x: start.x + 100, y: start.y };
-        refs.wireLayer.appendChild(createWirePath(start, previewEnd, true));
+        let endPoint;
+        let endPort = null;
+        
+        if (state.hoveredPort && state.hoveredPort !== state.pendingWireStart) {
+          const [hoverInstance] = state.hoveredPort.split(":");
+          const [startInstance] = state.pendingWireStart.split(":");
+          if (hoverInstance !== startInstance) {
+            endPoint = getPortCenter(state.hoveredPort, boardRect);
+            endPort = state.hoveredPort;
+          }
+        }
+        
+        if (!endPoint) {
+          endPoint = state.mousePosition;
+        }
+
+        const fromSide = getPortSide(state.pendingWireStart);
+        const toSide = endPort ? getPortSide(endPort) : "auto";
+        
+        const previewPath = createOptimizedWirePath(start, endPoint, fromSide, toSide, true);
+        refs.wireLayer.appendChild(previewPath);
       }
     }
   }
 
-  function createWirePath(from, to, isPreview) {
+  function getPortSide(portRef) {
+    const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
+    const port = refs.boardComponents.querySelector(selector);
+    if (!port) return "auto";
+    
+    const portStack = port.closest(".port-stack");
+    if (portStack && portStack.classList.contains("port-stack--left")) return "left";
+    if (portStack && portStack.classList.contains("port-stack--right")) return "right";
+    return "auto";
+  }
+
+  function createOptimizedWirePath(from, to, fromSide, toSide, isPreview) {
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    const midX = (from.x + to.x) / 2;
+    
+    const MIN_OFFSET = 40;
+    let controlPoint1, controlPoint2;
+    
+    let fromOffset = fromSide === "left" ? -MIN_OFFSET : (fromSide === "right" ? MIN_OFFSET : 0);
+    let toOffset = toSide === "left" ? -MIN_OFFSET : (toSide === "right" ? MIN_OFFSET : 0);
+    
+    if (fromOffset === 0) {
+      fromOffset = to.x > from.x ? MIN_OFFSET : -MIN_OFFSET;
+    }
+    if (toOffset === 0) {
+      toOffset = from.x > to.x ? -MIN_OFFSET : MIN_OFFSET;
+    }
+    
+    const fromExit = { x: from.x + fromOffset, y: from.y };
+    const toEntry = { x: to.x + toOffset, y: to.y };
+    
+    const dx = Math.abs(fromExit.x - toEntry.x);
+    const midX = (fromExit.x + toEntry.x) / 2;
+    const useMidControl = dx > MIN_OFFSET * 2;
+    
+    if (useMidControl) {
+      controlPoint1 = { x: midX, y: fromExit.y };
+      controlPoint2 = { x: midX, y: toEntry.y };
+    } else {
+      const avgY = (fromExit.y + toEntry.y) / 2;
+      controlPoint1 = { x: fromExit.x, y: avgY };
+      controlPoint2 = { x: toEntry.x, y: avgY };
+    }
+
     path.setAttribute(
       "d",
-      `M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`
+      `M ${from.x} ${from.y} L ${fromExit.x} ${fromExit.y} C ${controlPoint1.x} ${controlPoint1.y}, ${controlPoint2.x} ${controlPoint2.y}, ${toEntry.x} ${toEntry.y} L ${to.x} ${to.y}`
     );
+    
     path.setAttribute("class", `wire-line${isPreview ? " wire-line--preview" : ""}`);
     return path;
   }
@@ -454,7 +617,16 @@
 
   function highlightSelectedPort() {
     refs.boardComponents.querySelectorAll(".port-button").forEach((button) => {
-      button.classList.toggle("is-selected", button.dataset.portRef === state.pendingWireStart);
+      const isSelected = button.dataset.portRef === state.pendingWireStart;
+      button.classList.toggle("is-selected", isSelected);
+      
+      if (state.pendingWireStart && !isSelected) {
+        const [buttonInstance] = button.dataset.portRef.split(":");
+        const [startInstance] = state.pendingWireStart.split(":");
+        button.classList.toggle("is-connectable", buttonInstance !== startInstance);
+      } else {
+        button.classList.remove("is-connectable");
+      }
     });
   }
 
@@ -466,6 +638,7 @@
 
   function cancelPendingWire() {
     state.pendingWireStart = null;
+    state.hoveredPort = null;
     updateWiringStatus();
     highlightSelectedPort();
     renderWires();
