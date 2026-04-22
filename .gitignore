@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+.edge-debug*/
+.edge-headless/
+server.out.log
+server.err.log
+debug_page_output.json
+page.png

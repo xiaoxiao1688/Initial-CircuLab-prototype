@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CircuLab 入门电路实验台</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles/main.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero__copy">
+          <p class="eyebrow">Circuit Basics Lab</p>
+          <h1>像 EDA 一样搭电路，再由系统验证。</h1>
+          <p class="hero__text">
+            左侧选关卡和元件，中间在实验台里摆元件、拖元件、点端口连线，右侧直接看元件清单和判题反馈。
+          </p>
+          <div class="hero__actions">
+            <button id="jump-to-lab" class="button button--primary">跳到实验台</button>
+            <button id="reset-progress" class="button button--ghost">清空进度</button>
+          </div>
+        </div>
+        <div class="hero__panel">
+          <div class="stat-card">
+            <span class="stat-card__label">当前关卡</span>
+            <strong id="active-level-title">第 1 关</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card__label">已完成</span>
+            <strong id="completed-count">0 / 3</strong>
+          </div>
+          <div class="stat-card">
+            <span class="stat-card__label">实验模式</span>
+            <strong>拖拽元件 + 端口布线</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="eda-layout">
+        <aside class="tool-panel">
+          <section class="panel">
+            <div class="panel__heading">
+              <h2>实验关卡</h2>
+            </div>
+            <div id="level-list" class="stack"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel__heading">
+              <h2>元件库</h2>
+            </div>
+            <p class="muted">点击放置到实验台。元件落下后可以拖动，点击两个端口完成一条导线。</p>
+            <div id="component-palette" class="stack"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel__heading">
+              <h2>学习卡片</h2>
+            </div>
+            <div id="lesson-list" class="stack"></div>
+          </section>
+        </aside>
+
+        <section id="lab-section" class="board-panel">
+          <section class="panel panel--highlight panel--board">
+            <div class="panel__heading">
+              <div>
+                <p class="panel__eyebrow">EDA 实验台</p>
+                <h2 id="level-title">让 LED 亮起来</h2>
+              </div>
+              <div class="board-actions">
+                <button id="validate-circuit" class="button button--primary">验证电路</button>
+                <button id="clear-connections" class="button button--ghost">清空连线</button>
+              </div>
+            </div>
+
+            <p id="level-description" class="muted"></p>
+
+            <div class="goal-box">
+              <h3>本关目标</h3>
+              <ul id="level-goals" class="goal-list"></ul>
+            </div>
+
+            <div class="board-toolbar">
+              <div class="board-hint">
+                <span class="badge">布线状态</span>
+                <strong id="wiring-status">点击一个端口开始布线</strong>
+              </div>
+              <div class="board-actions">
+                <button id="cancel-wire" class="button button--ghost">取消布线</button>
+                <button id="reset-board" class="button button--ghost">重置本关</button>
+              </div>
+            </div>
+
+            <div id="board-canvas" class="board-canvas">
+              <svg id="wire-layer" class="wire-layer"></svg>
+              <div id="board-components" class="board-components"></div>
+            </div>
+          </section>
+        </section>
+
+        <aside class="info-panel">
+          <section class="panel">
+            <div class="panel__heading">
+              <h2>当前元件</h2>
+            </div>
+            <div id="active-components" class="stack"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel__heading">
+              <h2>已连导线</h2>
+            </div>
+            <div id="connection-list" class="connection-list"></div>
+          </section>
+
+          <section class="panel feedback-panel">
+            <div class="panel__heading">
+              <h2>判题反馈</h2>
+              <span id="feedback-badge" class="badge">待验证</span>
+            </div>
+            <div id="feedback-summary" class="feedback-summary">
+              先在实验台摆好元件并连线，再点击“验证电路”。
+            </div>
+            <div class="feedback-columns">
+              <div>
+                <h3>通过项</h3>
+                <ul id="feedback-pass" class="feedback-list"></ul>
+              </div>
+              <div>
+                <h3>待修正</h3>
+                <ul id="feedback-fail" class="feedback-list feedback-list--warn"></ul>
+              </div>
+            </div>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <template id="lesson-card-template">
+      <article class="lesson-card">
+        <div class="lesson-card__top">
+          <span class="lesson-card__icon"></span>
+          <div>
+            <h3></h3>
+            <p class="muted"></p>
+          </div>
+        </div>
+        <p class="lesson-card__body"></p>
+        <p class="lesson-card__tip"></p>
+      </article>
+    </template>
+
+    <template id="level-card-template">
+      <button class="level-card">
+        <div class="level-card__meta">
+          <span class="badge"></span>
+          <strong></strong>
+        </div>
+        <p></p>
+      </button>
+    </template>
+
+    <template id="palette-card-template">
+      <article class="component-card component-card--palette">
+        <div class="component-card__header">
+          <div>
+            <h3></h3>
+            <p></p>
+          </div>
+          <button class="button button--secondary">放置</button>
+        </div>
+        <div class="component-card__meta"></div>
+      </article>
+    </template>
+
+    <script src="./scripts/data.js"></script>
+    <script src="./scripts/validator.js"></script>
+    <script src="./scripts/app.js"></script>
+  </body>
+</html>
