@@ -689,51 +689,7 @@
     const height = Math.max(boardRect.height, 700);
     refs.wireLayer.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-    const existingPreview = refs.wireLayer.querySelector(".wire-line--preview");
-    if (existingPreview) {
-      existingPreview.remove();
-    }
-
-    state.connections.forEach((connection) => {
-      let path = refs.wireLayer.querySelector(`[data-connection-id="${escapeSelector(connection.id)}"]`);
-      const isNew = !path;
-
-      if (isNew) {
-        path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("data-connection-id", connection.id);
-        path.setAttribute("class", "wire-line");
-        refs.wireLayer.appendChild(path);
-      }
-
-      const from = getPortCenterStable(connection.from);
-      const to = getPortCenterStable(connection.to);
-
-      if (!from || !to) {
-        return;
-      }
-
-      const fromSide = getPortSide(connection.from);
-      const toSide = getPortSide(connection.to);
-      const pathData = createOptimizedWirePathData(from, to, fromSide, toSide);
-      path.setAttribute("d", pathData);
-
-      if (state.isRunning && state.poweredConnections.has(connection.id)) {
-        path.classList.add("is-powered");
-        path.classList.remove("is-powered-reverse");
-      } else if (state.isRunning) {
-        path.classList.remove("is-powered", "is-powered-reverse");
-      } else {
-        path.classList.remove("is-powered", "is-powered-reverse");
-      }
-    });
-
-    const allRenderedIds = new Set(state.connections.map((c) => c.id));
-    refs.wireLayer.querySelectorAll(".wire-line:not(.wire-line--preview)").forEach((path) => {
-      const connId = path.getAttribute("data-connection-id");
-      if (connId && !allRenderedIds.has(connId)) {
-        path.remove();
-      }
-    });
+    let previewPath = refs.wireLayer.getElementById("preview-wire-path");
 
     if (state.pendingWireStart) {
       const start = getPortCenterStable(state.pendingWireStart);
@@ -757,13 +713,63 @@
         const fromSide = getPortSide(state.pendingWireStart);
         const toSide = endPort ? getPortSide(endPort) : "auto";
 
-        const previewPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        if (!previewPath) {
+          previewPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          previewPath.setAttribute("id", "preview-wire-path");
+          previewPath.setAttribute("class", "wire-line wire-line--preview");
+          refs.wireLayer.appendChild(previewPath);
+        }
+
         const pathData = createOptimizedWirePathData(start, endPoint, fromSide, toSide);
         previewPath.setAttribute("d", pathData);
-        previewPath.setAttribute("class", "wire-line wire-line--preview");
-        refs.wireLayer.appendChild(previewPath);
+        previewPath.style.display = "block";
+      }
+    } else {
+      if (previewPath) {
+        previewPath.style.display = "none";
       }
     }
+
+    const currentConnectionIds = new Set();
+
+    state.connections.forEach((connection) => {
+      currentConnectionIds.add(connection.id);
+
+      let path = refs.wireLayer.querySelector(`[data-connection-id="${escapeSelector(connection.id)}"]`);
+
+      if (!path) {
+        path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("data-connection-id", connection.id);
+        path.setAttribute("class", "wire-line");
+        refs.wireLayer.insertBefore(path, previewPath || refs.wireLayer.firstChild);
+      }
+
+      const from = getPortCenterStable(connection.from);
+      const to = getPortCenterStable(connection.to);
+
+      if (!from || !to) {
+        path.style.display = "none";
+        return;
+      }
+
+      path.style.display = "block";
+
+      const fromSide = getPortSide(connection.from);
+      const toSide = getPortSide(connection.to);
+      const pathData = createOptimizedWirePathData(from, to, fromSide, toSide);
+      path.setAttribute("d", pathData);
+
+      const isPowered = state.isRunning && state.poweredConnections.has(connection.id);
+      path.classList.toggle("is-powered", isPowered);
+      path.classList.toggle("is-powered-reverse", false);
+    });
+
+    refs.wireLayer.querySelectorAll(".wire-line:not(.wire-line--preview)").forEach((path) => {
+      const connId = path.getAttribute("data-connection-id");
+      if (connId && !currentConnectionIds.has(connId)) {
+        path.remove();
+      }
+    });
   }
 
   function createOptimizedWirePathData(from, to, fromSide, toSide) {
@@ -822,12 +828,19 @@
     const port = refs.boardComponents.querySelector(selector);
     if (!port) return null;
 
-    const boardRect = refs.boardCanvas.getBoundingClientRect();
-    const portRect = port.getBoundingClientRect();
+    let x = 0;
+    let y = 0;
+    let element = port;
+
+    while (element && element !== refs.boardCanvas) {
+      x += element.offsetLeft;
+      y += element.offsetTop;
+      element = element.offsetParent;
+    }
 
     return {
-      x: portRect.left - boardRect.left + portRect.width / 2,
-      y: portRect.top - boardRect.top + portRect.height / 2
+      x: x + port.offsetWidth / 2,
+      y: y + port.offsetHeight / 2
     };
   }
 
