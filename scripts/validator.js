@@ -1,5 +1,5 @@
 (function () {
-  function buildGraph(components, connections) {
+  function buildGraph(components, connections, switchStates = {}) {
     const graph = {};
     const meta = {};
 
@@ -15,7 +15,7 @@
         };
       });
 
-      const conductivePairs = getInternalConductivePairs(component);
+      const conductivePairs = getInternalConductivePairs(component, switchStates);
       conductivePairs.forEach(([from, to]) => {
         const fromId = `${component.instanceId}:${from}`;
         const toId = `${component.instanceId}:${to}`;
@@ -30,8 +30,16 @@
     return { graph, meta };
   }
 
-  function getInternalConductivePairs(component) {
+  function getInternalConductivePairs(component, switchStates = {}) {
     if (component.id === "led") {
+      return [];
+    }
+
+    if (component.id === "switch") {
+      const isClosed = switchStates[component.instanceId] === true;
+      if (isClosed && component.ports.length >= 2) {
+        return [[component.ports[0].id, component.ports[1].id]];
+      }
       return [];
     }
 
@@ -82,11 +90,11 @@
     return `${instanceId}:${portId}`;
   }
 
-  function validate(level, components, connections) {
+  function validate(level, components, connections, switchStates = {}) {
     const requiredFindings = [];
     const issues = [];
 
-    const { graph } = buildGraph(components, connections);
+    const { graph } = buildGraph(components, connections, switchStates);
     const batteries = getComponentsById(components, "battery");
 
     if (batteries.length === 0) {
