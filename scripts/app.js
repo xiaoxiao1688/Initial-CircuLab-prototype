@@ -4,6 +4,10 @@
   const BOARD_MAX_X = 1020;
   const BOARD_MAX_Y = 640;
 
+  const COMPONENT_WIDTH = 168;
+  const MIN_WIRE_SEGMENT = 30;
+  const WIRE_CORNER_RADIUS = 8;
+
   const state = {
     activeLevelId: levels[0].id,
     placedComponents: [],
@@ -692,26 +696,23 @@
     let previewPath = refs.wireLayer.getElementById("preview-wire-path");
 
     if (state.pendingWireStart) {
-      const start = getPortCenterStable(state.pendingWireStart);
-      if (start) {
-        let endPoint;
-        let endPort = null;
+      const fromAnchor = getPortAnchor(state.pendingWireStart);
+      if (fromAnchor) {
+        let toAnchor = null;
+        let isValidConnection = false;
 
         if (state.hoveredPort && state.hoveredPort !== state.pendingWireStart) {
           const [hoverInstance] = state.hoveredPort.split(":");
           const [startInstance] = state.pendingWireStart.split(":");
           if (hoverInstance !== startInstance) {
-            endPoint = getPortCenterStable(state.hoveredPort);
-            endPort = state.hoveredPort;
+            toAnchor = getPortAnchor(state.hoveredPort);
+            isValidConnection = true;
           }
         }
 
-        if (!endPoint) {
-          endPoint = state.mousePosition;
+        if (!toAnchor) {
+          toAnchor = createVirtualAnchor(fromAnchor, state.mousePosition);
         }
-
-        const fromSide = getPortSide(state.pendingWireStart);
-        const toSide = endPort ? getPortSide(endPort) : "auto";
 
         if (!previewPath) {
           previewPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
@@ -720,7 +721,7 @@
           refs.wireLayer.appendChild(previewPath);
         }
 
-        const pathData = createOptimizedWirePathData(start, endPoint, fromSide, toSide);
+        const pathData = createWirePathData(fromAnchor, toAnchor);
         previewPath.setAttribute("d", pathData);
         previewPath.style.display = "block";
       }
@@ -744,19 +745,17 @@
         refs.wireLayer.insertBefore(path, previewPath || refs.wireLayer.firstChild);
       }
 
-      const from = getPortCenterStable(connection.from);
-      const to = getPortCenterStable(connection.to);
+      const fromAnchor = getPortAnchor(connection.from);
+      const toAnchor = getPortAnchor(connection.to);
 
-      if (!from || !to) {
+      if (!fromAnchor || !toAnchor) {
         path.style.display = "none";
         return;
       }
 
       path.style.display = "block";
 
-      const fromSide = getPortSide(connection.from);
-      const toSide = getPortSide(connection.to);
-      const pathData = createOptimizedWirePathData(from, to, fromSide, toSide);
+      const pathData = createWirePathData(fromAnchor, toAnchor);
       path.setAttribute("d", pathData);
 
       const isPowered = state.isRunning && state.poweredConnections.has(connection.id);
@@ -770,6 +769,135 @@
         path.remove();
       }
     });
+  }
+
+  function createVirtualAnchor(fromAnchor, targetPos) {
+    const fromDir = fromAnchor.direction;
+    const fromExit = fromAnchor.exitPoint;
+
+    let virtualDirection = 0;
+    let virtualExitPoint = { x: targetPos.x, y: targetPos.y };
+
+    if (fromDir === 1) {
+      if (targetPos.x > fromExit.x) {
+        virtualDirection = -1;
+      } else {
+        virtualDirection = 1;
+      }
+    } else if (fromDir === -1) {
+      if (targetPos.x < fromExit.x) {
+        virtualDirection = 1;
+      } else {
+        virtualDirection = -1;
+      }
+    }
+
+    return {
+      center: { x: targetPos.x, y: targetPos.y },
+      exitPoint: virtualExitPoint,
+      side: virtualDirection === 1 ? "right" : virtualDirection === -1 ? "left" : "auto",
+      direction: virtualDirection,
+      componentX: targetPos.x,
+      componentY: targetPos.y
+    };
+  }
+
+  function createWirePathData(fromAnchor, toAnchor) {
+    const fromExit = fromAnchor.exitPoint;
+    const toEntry = toAnchor.exitPoint;
+
+    const points = calculateWireSegments(fromAnchor, toAnchor);
+
+    if (points.length < 2) {
+      return "";
+    }
+
+    let d = `M ${points[0].x} ${points[0].y}`;
+
+    for (let i = 1; i < points.length; i++) {
+      const prev = points[i - 1];
+      const curr = points[i];
+
+      if (WIRE_CORNER_RADIUS > 0 && i > 1 && i < points.length - 1) {
+        const prevPrev = points[i - 2];
+        const nextNext = i < points.length - 2 ? points[i + 1] : null;
+
+        d += ` L ${curr.x} ${curr.y}`;
+      } else {
+        d += ` L ${curr.x} ${curr.y}`;
+      }
+    }
+
+    return d;
+  }
+
+  function calculateWireSegments(fromAnchor, toAnchor) {
+    const fromExit = fromAnchor.exitPoint;
+    const toEntry = toAnchor.exitPoint;
+    const fromDir = fromAnchor.direction;
+    const toDir = toAnchor.direction;
+
+    const points = [];
+    points.push({ x: fromExit.x, y: fromExit.y });
+
+    const dx = toEntry.x - fromExit.x;
+    const dy = toEntry.y - fromExit.y;
+    const sameY = Math.abs(dy) < 5;
+
+    if (fromDir === 1 && toDir === -1) {
+      if (dx > 0 && sameY) {
+        points.push({ x: toEntry.x, y: toEntry.y });
+      } else {
+        const midX = (fromExit.x + toEntry.x) / 2;
+        points.push({ x: midX, y: fromExit.y });
+        points.push({ x: midX, y: toEntry.y });
+        points.push({ x: toEntry.x, y: toEntry.y });
+      }
+    } else if (fromDir === -1 && toDir === 1) {
+      if (dx < 0 && sameY) {
+        points.push({ x: toEntry.x, y: toEntry.y });
+      } else {
+        const midX = (fromExit.x + toEntry.x) / 2;
+        points.push({ x: midX, y: fromExit.y });
+        points.push({ x: midX, y: toEntry.y });
+        points.push({ x: toEntry.x, y: toEntry.y });
+      }
+    } else if (fromDir === 1 && toDir === 1) {
+      const farthestX = Math.max(fromExit.x, toEntry.x) + MIN_WIRE_SEGMENT;
+      points.push({ x: farthestX, y: fromExit.y });
+      points.push({ x: farthestX, y: toEntry.y });
+      points.push({ x: toEntry.x, y: toEntry.y });
+    } else if (fromDir === -1 && toDir === -1) {
+      const nearestX = Math.min(fromExit.x, toEntry.x) - MIN_WIRE_SEGMENT;
+      points.push({ x: nearestX, y: fromExit.y });
+      points.push({ x: nearestX, y: toEntry.y });
+      points.push({ x: toEntry.x, y: toEntry.y });
+    } else if (fromDir === 1 && toDir === 0) {
+      const exitX = fromExit.x + MIN_WIRE_SEGMENT;
+      points.push({ x: exitX, y: fromExit.y });
+      if (Math.abs(fromExit.y - toEntry.y) > MIN_WIRE_SEGMENT) {
+        points.push({ x: exitX, y: toEntry.y });
+      }
+      points.push({ x: toEntry.x, y: toEntry.y });
+    } else if (fromDir === -1 && toDir === 0) {
+      const exitX = fromExit.x - MIN_WIRE_SEGMENT;
+      points.push({ x: exitX, y: fromExit.y });
+      if (Math.abs(fromExit.y - toEntry.y) > MIN_WIRE_SEGMENT) {
+        points.push({ x: exitX, y: toEntry.y });
+      }
+      points.push({ x: toEntry.x, y: toEntry.y });
+    } else if (fromDir === 0) {
+      if (Math.abs(dx) > MIN_WIRE_SEGMENT) {
+        const midX = fromExit.x + (toEntry.x - fromExit.x) / 2;
+        points.push({ x: midX, y: fromExit.y });
+        points.push({ x: midX, y: toEntry.y });
+      }
+      points.push({ x: toEntry.x, y: toEntry.y });
+    } else {
+      points.push({ x: toEntry.x, y: toEntry.y });
+    }
+
+    return points;
   }
 
   function createOptimizedWirePathData(from, to, fromSide, toSide) {
@@ -841,6 +969,66 @@
     return {
       x: x + port.offsetWidth / 2,
       y: y + port.offsetHeight / 2
+    };
+  }
+
+  function getPortAnchor(portRef) {
+    const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
+    const port = refs.boardComponents.querySelector(selector);
+    if (!port) return null;
+
+    const componentEl = port.closest(".board-component");
+    if (!componentEl) return null;
+
+    let portCenterX = 0;
+    let portCenterY = 0;
+    let element = port;
+
+    while (element && element !== refs.boardCanvas) {
+      portCenterX += element.offsetLeft;
+      portCenterY += element.offsetTop;
+      element = element.offsetParent;
+    }
+    portCenterX += port.offsetWidth / 2;
+    portCenterY += port.offsetHeight / 2;
+
+    const portStack = port.closest(".port-stack");
+    const isLeftSide = portStack && portStack.classList.contains("port-stack--left");
+    const isRightSide = portStack && portStack.classList.contains("port-stack--right");
+
+    let componentX = 0;
+    let componentY = 0;
+    let compElement = componentEl;
+    while (compElement && compElement !== refs.boardCanvas) {
+      componentX += compElement.offsetLeft;
+      componentY += compElement.offsetTop;
+      compElement = compElement.offsetParent;
+    }
+
+    let exitPointX, exitPointY;
+    let direction;
+
+    if (isLeftSide) {
+      exitPointX = componentX;
+      exitPointY = portCenterY;
+      direction = -1;
+    } else if (isRightSide) {
+      exitPointX = componentX + COMPONENT_WIDTH;
+      exitPointY = portCenterY;
+      direction = 1;
+    } else {
+      exitPointX = portCenterX;
+      exitPointY = portCenterY;
+      direction = 0;
+    }
+
+    return {
+      center: { x: portCenterX, y: portCenterY },
+      exitPoint: { x: exitPointX, y: exitPointY },
+      side: isLeftSide ? "left" : isRightSide ? "right" : "auto",
+      direction: direction,
+      componentX: componentX,
+      componentY: componentY
     };
   }
 
