@@ -4,6 +4,11 @@
   const BOARD_MAX_X = 1020;
   const BOARD_MAX_Y = 640;
 
+  const PORT_OFFSET_LEFT = 9;
+  const PORT_OFFSET_RIGHT = 159;
+  const PORT_Y_OFFSET_TOP = 55;
+  const PORT_Y_GAP = 32;
+
   const state = {
     activeLevelId: levels[0].id,
     placedComponents: [],
@@ -15,7 +20,9 @@
     isRunning: false,
     switchStates: {},
     mousePosition: { x: 0, y: 0 },
-    hoveredPort: null
+    hoveredPort: null,
+    poweredPorts: new Set(),
+    poweredConnections: new Set()
   };
 
   const refs = {
@@ -251,7 +258,7 @@
       leftPorts.length = 0;
     }
 
-    const symbolClass = getSymbolClass(component.id);
+    const symbolClass = getSymbolClass(component.id, component.instanceId);
     const switchIndicator = component.id === "switch" 
       ? `<div class="switch-indicator ${state.switchStates[component.instanceId] ? 'is-closed' : ''}" data-instance-id="${component.instanceId}"></div>`
       : '';
@@ -357,11 +364,22 @@
     return element;
   }
 
-  function getSymbolClass(componentId) {
+  function getSymbolClass(componentId, instanceId) {
     if (!state.isRunning) return "";
-    if (componentId === "led") return "is-lit-led";
-    if (componentId === "lamp") return "is-lit-lamp";
     if (componentId === "battery") return "is-lit";
+
+    const component = state.placedComponents.find((c) => c.instanceId === instanceId);
+    if (!component) return "";
+
+    const hasPoweredPort = component.ports.some((port) => {
+      const portRef = `${instanceId}:${port.id}`;
+      return state.poweredPorts.has(portRef);
+    });
+
+    if (hasPoweredPort) {
+      if (componentId === "led") return "is-lit-led";
+      if (componentId === "lamp") return "is-lit-lamp";
+    }
     return "";
   }
 
@@ -372,6 +390,11 @@
     );
     if (indicator) {
       indicator.classList.toggle("is-closed", state.switchStates[instanceId]);
+    }
+
+    if (state.isRunning) {
+      calculatePoweredPaths();
+      renderBoard();
     }
   }
 
@@ -440,7 +463,12 @@
 
   function validateCircuit() {
     const level = getActiveLevel();
-    const result = window.CircuitValidator.validate(level, state.placedComponents, state.connections);
+    const result = window.CircuitValidator.validate(
+      level, 
+      state.placedComponents, 
+      state.connections,
+      state.switchStates
+    );
 
     if (result.passed) {
       state.progress[level.id] = {
@@ -450,6 +478,8 @@
       renderLevels();
       renderProgress();
       enterRunningState();
+    } else {
+      exitRunningState();
     }
 
     setFeedback(result);
@@ -461,7 +491,125 @@
     if (refs.boardToolbar) {
       refs.boardToolbar.classList.add("is-running");
     }
+    calculatePoweredPaths();
     renderBoard();
+  }
+
+  function exitRunningState() {
+    state.isRunning = false;
+    state.poweredPorts.clear();
+    state.poweredConnections.clear();
+    refs.boardCanvas.classList.remove("is-running");
+    if (refs.boardToolbar) {
+      refs.boardToolbar.classList.remove("is-running");
+    }
+  }
+
+  function calculatePoweredPaths() {
+    state.poweredPorts = new Set();
+    state.poweredConnections = new Set();
+
+    const batteries = state.placedComponents.filter((c) => c.id === "battery");
+    if (batteries.length === 0) return;
+
+    const battery = batteries[0];
+    const positivePort = `${battery.instanceId}:positive`;
+    const negativePort = `${battery.instanceId}:negative`;
+
+    const { graph, meta } = buildGraphWithSwitches(
+      state.placedComponents,
+      state.connections,
+      state.switchStates
+    );
+
+    const visited = new Set();
+    const queue = [positivePort];
+    visited.add(positivePort);
+    state.poweredPorts.add(positivePort);
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      const neighbors = graph[current] || new Set();
+
+      neighbors.forEach((next) => {
+        if (!visited.has(next)) {
+          visited.add(next);
+          state.poweredPorts.add(next);
+
+          const conn = state.connections.find(
+            (c) =>
+              (c.from === current && c.to === next) ||
+              (c.from === next && c.to === current)
+          );
+          if (conn) {
+            state.poweredConnections.add(conn.id);
+          }
+
+          queue.push(next);
+        }
+      });
+    }
+
+    if (state.poweredPorts.has(negativePort)) {
+      state.poweredPorts.add(negativePort);
+    }
+  }
+
+  function buildGraphWithSwitches(components, connections, switchStates) {
+    const graph = {};
+    const meta = {};
+
+    components.forEach((component) => {
+      component.ports.forEach((port) => {
+        const portId = `${component.instanceId}:${port.id}`;
+        graph[portId] = graph[portId] || new Set();
+        meta[portId] = {
+          componentId: component.id,
+          instanceId: component.instanceId,
+          portId: port.id,
+          label: port.label
+        };
+      });
+
+      const conductivePairs = getInternalConductivePairsWithSwitch(component, switchStates);
+      conductivePairs.forEach(([from, to]) => {
+        const fromId = `${component.instanceId}:${from}`;
+        const toId = `${component.instanceId}:${to}`;
+        if (graph[fromId] && graph[toId]) {
+          graph[fromId].add(toId);
+          graph[toId].add(fromId);
+        }
+      });
+    });
+
+    connections.forEach((connection) => {
+      if (graph[connection.from] && graph[connection.to]) {
+        graph[connection.from].add(connection.to);
+        graph[connection.to].add(connection.from);
+      }
+    });
+
+    return { graph, meta };
+  }
+
+  function getInternalConductivePairsWithSwitch(component, switchStates) {
+    if (component.id === "led") {
+      return [];
+    }
+
+    if (component.id === "switch") {
+      const isClosed = switchStates[component.instanceId] === true;
+      if (isClosed && component.ports.length >= 2) {
+        return [[component.ports[0].id, component.ports[1].id]];
+      }
+      return [];
+    }
+
+    if (component.ports.length < 2) {
+      return [];
+    }
+
+    return [[component.ports[0].id, component.ports[1].id]];
   }
 
   function setFeedback(result) {
@@ -474,6 +622,43 @@
       : "<li>没有待修正项。</li>";
     refs.feedbackBadge.textContent = result.passed ? "已通过" : "未通过";
     refs.feedbackBadge.className = `badge ${result.passed ? "is-success" : "is-warning"}`;
+
+    const feedbackPanel = document.querySelector(".feedback-panel");
+    if (feedbackPanel) {
+      feedbackPanel.classList.toggle("is-failed", !result.passed);
+    }
+    refs.feedbackSummary.classList.toggle("is-failed", !result.passed);
+
+    refs.boardComponents.querySelectorAll(".is-error").forEach((el) => {
+      el.classList.remove("is-error");
+    });
+    refs.boardComponents.querySelectorAll(".port-button.is-error").forEach((el) => {
+      el.classList.remove("is-error");
+    });
+    refs.wireLayer.querySelectorAll(".wire-line.is-error").forEach((el) => {
+      el.classList.remove("is-error");
+    });
+
+    if (!result.passed) {
+      if (result.failItems.length > 0) {
+        const battery = state.placedComponents.find((c) => c.id === "battery");
+        const switches = state.placedComponents.filter((c) => c.id === "switch");
+
+        switches.forEach((sw) => {
+          const isClosed = state.switchStates[sw.instanceId] === true;
+          if (!isClosed) {
+            const el = refs.boardComponents.querySelector(`[data-instance-id="${sw.instanceId}"]`);
+            if (el) el.classList.add("is-error");
+          }
+        });
+
+        if (state.connections.length === 0) {
+          refs.boardComponents.querySelectorAll(".port-button").forEach((btn) => {
+            btn.classList.add("is-error");
+          });
+        }
+      }
+    }
   }
 
   function removeComponent(instanceId) {
@@ -501,11 +686,25 @@
     const width = Math.max(boardRect.width, 1000);
     const height = Math.max(boardRect.height, 700);
     refs.wireLayer.setAttribute("viewBox", `0 0 ${width} ${height}`);
-    refs.wireLayer.innerHTML = "";
+
+    const existingPreview = refs.wireLayer.querySelector(".wire-line--preview");
+    if (existingPreview) {
+      existingPreview.remove();
+    }
 
     state.connections.forEach((connection) => {
-      const from = getPortCenter(connection.from, boardRect);
-      const to = getPortCenter(connection.to, boardRect);
+      let path = refs.wireLayer.querySelector(`[data-connection-id="${escapeSelector(connection.id)}"]`);
+      const isNew = !path;
+
+      if (isNew) {
+        path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("data-connection-id", connection.id);
+        path.setAttribute("class", "wire-line");
+        refs.wireLayer.appendChild(path);
+      }
+
+      const from = getPortCenterStable(connection.from);
+      const to = getPortCenterStable(connection.to);
 
       if (!from || !to) {
         return;
@@ -513,40 +712,96 @@
 
       const fromSide = getPortSide(connection.from);
       const toSide = getPortSide(connection.to);
-      
-      const path = createOptimizedWirePath(from, to, fromSide, toSide, false);
-      if (state.isRunning) {
+      const pathData = createOptimizedWirePathData(from, to, fromSide, toSide);
+      path.setAttribute("d", pathData);
+
+      if (state.isRunning && state.poweredConnections.has(connection.id)) {
         path.classList.add("is-powered");
+        path.classList.remove("is-powered-reverse");
+      } else if (state.isRunning) {
+        path.classList.remove("is-powered", "is-powered-reverse");
+      } else {
+        path.classList.remove("is-powered", "is-powered-reverse");
       }
-      refs.wireLayer.appendChild(path);
+    });
+
+    const allRenderedIds = new Set(state.connections.map((c) => c.id));
+    refs.wireLayer.querySelectorAll(".wire-line:not(.wire-line--preview)").forEach((path) => {
+      const connId = path.getAttribute("data-connection-id");
+      if (connId && !allRenderedIds.has(connId)) {
+        path.remove();
+      }
     });
 
     if (state.pendingWireStart) {
-      const start = getPortCenter(state.pendingWireStart, boardRect);
+      const start = getPortCenterStable(state.pendingWireStart);
       if (start) {
         let endPoint;
         let endPort = null;
-        
+
         if (state.hoveredPort && state.hoveredPort !== state.pendingWireStart) {
           const [hoverInstance] = state.hoveredPort.split(":");
           const [startInstance] = state.pendingWireStart.split(":");
           if (hoverInstance !== startInstance) {
-            endPoint = getPortCenter(state.hoveredPort, boardRect);
+            endPoint = getPortCenterStable(state.hoveredPort);
             endPort = state.hoveredPort;
           }
         }
-        
+
         if (!endPoint) {
           endPoint = state.mousePosition;
         }
 
         const fromSide = getPortSide(state.pendingWireStart);
         const toSide = endPort ? getPortSide(endPort) : "auto";
-        
-        const previewPath = createOptimizedWirePath(start, endPoint, fromSide, toSide, true);
+
+        const previewPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        const pathData = createOptimizedWirePathData(start, endPoint, fromSide, toSide);
+        previewPath.setAttribute("d", pathData);
+        previewPath.setAttribute("class", "wire-line wire-line--preview");
         refs.wireLayer.appendChild(previewPath);
       }
     }
+  }
+
+  function createOptimizedWirePathData(from, to, fromSide, toSide) {
+    const MIN_OFFSET = 40;
+    let controlPoint1, controlPoint2;
+
+    let fromOffset = fromSide === "left" ? -MIN_OFFSET : fromSide === "right" ? MIN_OFFSET : 0;
+    let toOffset = toSide === "left" ? -MIN_OFFSET : toSide === "right" ? MIN_OFFSET : 0;
+
+    if (fromOffset === 0) {
+      fromOffset = to.x > from.x ? MIN_OFFSET : -MIN_OFFSET;
+    }
+    if (toOffset === 0) {
+      toOffset = from.x > to.x ? -MIN_OFFSET : MIN_OFFSET;
+    }
+
+    const fromExit = { x: from.x + fromOffset, y: from.y };
+    const toEntry = { x: to.x + toOffset, y: to.y };
+
+    const dx = Math.abs(fromExit.x - toEntry.x);
+    const midX = (fromExit.x + toEntry.x) / 2;
+    const useMidControl = dx > MIN_OFFSET * 2;
+
+    if (useMidControl) {
+      controlPoint1 = { x: midX, y: fromExit.y };
+      controlPoint2 = { x: midX, y: toEntry.y };
+    } else {
+      const avgY = (fromExit.y + toEntry.y) / 2;
+      controlPoint1 = { x: fromExit.x, y: avgY };
+      controlPoint2 = { x: toEntry.x, y: avgY };
+    }
+
+    return `M ${from.x} ${from.y} L ${fromExit.x} ${fromExit.y} C ${controlPoint1.x} ${controlPoint1.y}, ${controlPoint2.x} ${controlPoint2.y}, ${toEntry.x} ${toEntry.y} L ${to.x} ${to.y}`;
+  }
+
+  function createOptimizedWirePath(from, to, fromSide, toSide, isPreview) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", createOptimizedWirePathData(from, to, fromSide, toSide));
+    path.setAttribute("class", `wire-line${isPreview ? " wire-line--preview" : ""}`);
+    return path;
   }
 
   function getPortSide(portRef) {
@@ -560,53 +815,38 @@
     return "auto";
   }
 
-  function createOptimizedWirePath(from, to, fromSide, toSide, isPreview) {
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    
-    const MIN_OFFSET = 40;
-    let controlPoint1, controlPoint2;
-    
-    let fromOffset = fromSide === "left" ? -MIN_OFFSET : (fromSide === "right" ? MIN_OFFSET : 0);
-    let toOffset = toSide === "left" ? -MIN_OFFSET : (toSide === "right" ? MIN_OFFSET : 0);
-    
-    if (fromOffset === 0) {
-      fromOffset = to.x > from.x ? MIN_OFFSET : -MIN_OFFSET;
-    }
-    if (toOffset === 0) {
-      toOffset = from.x > to.x ? -MIN_OFFSET : MIN_OFFSET;
-    }
-    
-    const fromExit = { x: from.x + fromOffset, y: from.y };
-    const toEntry = { x: to.x + toOffset, y: to.y };
-    
-    const dx = Math.abs(fromExit.x - toEntry.x);
-    const midX = (fromExit.x + toEntry.x) / 2;
-    const useMidControl = dx > MIN_OFFSET * 2;
-    
-    if (useMidControl) {
-      controlPoint1 = { x: midX, y: fromExit.y };
-      controlPoint2 = { x: midX, y: toEntry.y };
+  function getPortCenterStable(portRef) {
+    const [instanceId, portId] = portRef.split(":");
+    const component = state.placedComponents.find((item) => item.instanceId === instanceId);
+    if (!component) return null;
+
+    const port = component.ports.find((p) => p.id === portId);
+    if (!port) return null;
+
+    const portIndex = component.ports.indexOf(port);
+    const leftPortCount = Math.ceil(component.ports.length / 2);
+    const isLeftSide = portIndex < leftPortCount;
+
+    let x;
+    if (isLeftSide) {
+      x = component.x + PORT_OFFSET_LEFT;
     } else {
-      const avgY = (fromExit.y + toEntry.y) / 2;
-      controlPoint1 = { x: fromExit.x, y: avgY };
-      controlPoint2 = { x: toEntry.x, y: avgY };
+      x = component.x + PORT_OFFSET_RIGHT;
     }
 
-    path.setAttribute(
-      "d",
-      `M ${from.x} ${from.y} L ${fromExit.x} ${fromExit.y} C ${controlPoint1.x} ${controlPoint1.y}, ${controlPoint2.x} ${controlPoint2.y}, ${toEntry.x} ${toEntry.y} L ${to.x} ${to.y}`
-    );
-    
-    path.setAttribute("class", `wire-line${isPreview ? " wire-line--preview" : ""}`);
-    return path;
+    const localIndex = isLeftSide ? portIndex : portIndex - leftPortCount;
+    const y = component.y + PORT_Y_OFFSET_TOP + localIndex * PORT_Y_GAP;
+
+    return { x, y };
   }
 
   function getPortCenter(portRef, boardRect) {
+    const stable = getPortCenterStable(portRef);
+    if (stable) return stable;
+
     const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
     const port = refs.boardComponents.querySelector(selector);
-    if (!port) {
-      return null;
-    }
+    if (!port) return null;
 
     const rect = port.getBoundingClientRect();
     return {

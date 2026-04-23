@@ -610,20 +610,58 @@ button {
 }
 
 @keyframes portPulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.15); }
+  0%, 100% { box-shadow: 0 0 0 6px rgba(74, 222, 128, 0.3); }
+  50% { box-shadow: 0 0 0 10px rgba(74, 222, 128, 0.5); }
 }
 
 .port-button.is-hovered {
-  transform: scale(1.3);
   background: #ff6b6b;
   box-shadow: 0 0 0 8px rgba(255, 107, 107, 0.4);
   transition: all 0.15s ease-out;
+  z-index: 10;
 }
 
 .port-button.is-disconnected {
   background: #64748b;
   box-shadow: 0 0 0 4px rgba(100, 116, 139, 0.2);
+}
+
+.port-button.is-error {
+  background: #ef4444;
+  box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.4);
+  animation: errorPulse 0.8s ease-in-out infinite;
+}
+
+@keyframes errorPulse {
+  0%, 100% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0.6); }
+}
+
+.wire-line.is-error {
+  stroke: #ef4444;
+  filter: drop-shadow(0 0 8px rgba(239, 68, 68, 0.5));
+  animation: wireErrorPulse 1s ease-in-out infinite;
+}
+
+@keyframes wireErrorPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.board-component.is-error {
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 0 20px rgba(239, 68, 68, 0.3);
+}
+
+.feedback-panel.is-failed {
+  background:
+    linear-gradient(180deg, rgba(254, 202, 202, 0.5), rgba(255, 248, 239, 0.92)),
+    var(--surface);
+}
+
+.feedback-summary.is-failed {
+  background: rgba(254, 202, 202, 0.4);
+  border-color: rgba(239, 68, 68, 0.3);
 }
 
 .board-component.is-powered {
