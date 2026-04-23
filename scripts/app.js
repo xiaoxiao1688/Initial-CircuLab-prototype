@@ -4,11 +4,6 @@
   const BOARD_MAX_X = 1020;
   const BOARD_MAX_Y = 640;
 
-  const PORT_OFFSET_LEFT = 9;
-  const PORT_OFFSET_RIGHT = 159;
-  const PORT_Y_OFFSET_TOP = 55;
-  const PORT_Y_GAP = 32;
-
   const state = {
     activeLevelId: levels[0].id,
     placedComponents: [],
@@ -457,8 +452,11 @@
   function clearConnections() {
     state.connections = [];
     cancelPendingWire();
+    if (state.isRunning) {
+      exitRunningState();
+    }
     renderConnections();
-    renderWires();
+    renderBoard();
   }
 
   function validateCircuit() {
@@ -480,6 +478,7 @@
       enterRunningState();
     } else {
       exitRunningState();
+      renderBoard();
     }
 
     setFeedback(result);
@@ -670,6 +669,9 @@
       state.pendingWireStart = null;
     }
     delete state.switchStates[instanceId];
+    if (state.isRunning) {
+      exitRunningState();
+    }
     updateWiringStatus();
     renderPlacedComponents();
     renderConnections();
@@ -816,43 +818,21 @@
   }
 
   function getPortCenterStable(portRef) {
-    const [instanceId, portId] = portRef.split(":");
-    const component = state.placedComponents.find((item) => item.instanceId === instanceId);
-    if (!component) return null;
-
-    const port = component.ports.find((p) => p.id === portId);
-    if (!port) return null;
-
-    const portIndex = component.ports.indexOf(port);
-    const leftPortCount = Math.ceil(component.ports.length / 2);
-    const isLeftSide = portIndex < leftPortCount;
-
-    let x;
-    if (isLeftSide) {
-      x = component.x + PORT_OFFSET_LEFT;
-    } else {
-      x = component.x + PORT_OFFSET_RIGHT;
-    }
-
-    const localIndex = isLeftSide ? portIndex : portIndex - leftPortCount;
-    const y = component.y + PORT_Y_OFFSET_TOP + localIndex * PORT_Y_GAP;
-
-    return { x, y };
-  }
-
-  function getPortCenter(portRef, boardRect) {
-    const stable = getPortCenterStable(portRef);
-    if (stable) return stable;
-
     const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
     const port = refs.boardComponents.querySelector(selector);
     if (!port) return null;
 
-    const rect = port.getBoundingClientRect();
+    const boardRect = refs.boardCanvas.getBoundingClientRect();
+    const portRect = port.getBoundingClientRect();
+
     return {
-      x: rect.left - boardRect.left + rect.width / 2,
-      y: rect.top - boardRect.top + rect.height / 2
+      x: portRect.left - boardRect.left + portRect.width / 2,
+      y: portRect.top - boardRect.top + portRect.height / 2
     };
+  }
+
+  function getPortCenter(portRef, boardRect) {
+    return getPortCenterStable(portRef);
   }
 
   function highlightSelectedPort() {
