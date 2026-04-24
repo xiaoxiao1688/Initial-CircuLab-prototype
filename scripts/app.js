@@ -3,10 +3,23 @@
   const { lessons, components, levels } = window.CIRCUIT_DATA;
   const BOARD_MAX_X = 1020;
   const BOARD_MAX_Y = 640;
+  const BOARD_SURFACE_WIDTH = 1120;
+  const BOARD_SURFACE_HEIGHT = 760;
+  const BOARD_ZOOM_MIN = 0.6;
+  const BOARD_ZOOM_MAX = 1.8;
+  const BOARD_ZOOM_STEP = 0.2;
 
-  const COMPONENT_WIDTH = 168;
   const MIN_WIRE_SEGMENT = 30;
   const WIRE_CORNER_RADIUS = 8;
+  const PORT_LEAD_LENGTH = 18;
+
+  const COMPONENT_WIDTH = 168;
+  const COMPONENT_HEADER_HEIGHT = 52;
+  const COMPONENT_BODY_PADDING = 14;
+  const PORT_BUTTON_SIZE = 18;
+  const PORT_STACK_GAP = 14;
+  const PORT_STACK_LEFT_OFFSET = -23;
+  const PORT_STACK_RIGHT_OFFSET = 23;
 
   const state = {
     activeLevelId: levels[0].id,
@@ -18,6 +31,10 @@
     dragState: null,
     isRunning: false,
     switchStates: {},
+    boardZoom: 1,
+    boardOffsetX: 0,
+    boardOffsetY: 0,
+    panState: null,
     mousePosition: { x: 0, y: 0 },
     hoveredPort: null,
     poweredPorts: new Set(),
@@ -40,10 +57,16 @@
     completedCount: document.querySelector("#completed-count"),
     activeLevelTitle: document.querySelector("#active-level-title"),
     boardCanvas: document.querySelector("#board-canvas"),
+    boardViewport: document.querySelector("#board-viewport"),
+    boardSurface: document.querySelector("#board-surface"),
     boardComponents: document.querySelector("#board-components"),
     wireLayer: document.querySelector("#wire-layer"),
     wiringStatus: document.querySelector("#wiring-status"),
-    boardToolbar: document.querySelector(".board-toolbar")
+    boardToolbar: document.querySelector(".board-toolbar"),
+    zoomOut: document.querySelector("#zoom-out"),
+    zoomIn: document.querySelector("#zoom-in"),
+    zoomReset: document.querySelector("#zoom-reset"),
+    zoomLevel: document.querySelector("#zoom-level")
   };
 
   document.querySelector("#jump-to-lab").addEventListener("click", () => {
@@ -54,23 +77,201 @@
   document.querySelector("#clear-connections").addEventListener("click", clearConnections);
   document.querySelector("#cancel-wire").addEventListener("click", cancelPendingWire);
   document.querySelector("#reset-board").addEventListener("click", () => bootstrapLevel(getActiveLevel()));
+  refs.zoomOut.addEventListener("click", () => setBoardZoom(state.boardZoom - BOARD_ZOOM_STEP));
+  refs.zoomIn.addEventListener("click", () => setBoardZoom(state.boardZoom + BOARD_ZOOM_STEP));
+  refs.zoomReset.addEventListener("click", resetBoardView);
   window.addEventListener("resize", renderWires);
 
+  refs.boardCanvas.addEventListener("mousedown", handleCanvasMouseDown);
   refs.boardCanvas.addEventListener("mousemove", (event) => {
-    const boardRect = refs.boardCanvas.getBoundingClientRect();
-    state.mousePosition = {
-      x: event.clientX - boardRect.left,
-      y: event.clientY - boardRect.top
-    };
+    handleCanvasMouseMove(event);
+    state.mousePosition = screenToLogical(event.clientX, event.clientY);
     if (state.pendingWireStart) {
       requestAnimationFrame(renderWires);
     }
   });
+  refs.boardCanvas.addEventListener("mouseup", handleCanvasMouseUp);
+  refs.boardCanvas.addEventListener("mouseleave", handleCanvasMouseUp);
+  refs.boardCanvas.addEventListener("wheel", handleCanvasWheel, { passive: false });
+  refs.boardCanvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
+  applyBoardTransform();
   renderLessons();
   renderLevels();
   bootstrapLevel(getActiveLevel());
   renderProgress();
+
+  function screenToLogical(screenX, screenY) {
+    const boardRect = refs.boardCanvas.getBoundingClientRect();
+    const viewportX = screenX - boardRect.left - refs.boardCanvas.scrollLeft;
+    const viewportY = screenY - boardRect.top - refs.boardCanvas.scrollTop;
+    return {
+      x: (viewportX - state.boardOffsetX * state.boardZoom) / state.boardZoom,
+      y: (viewportY - state.boardOffsetY * state.boardZoom) / state.boardZoom
+    };
+  }
+
+  function logicalToScreen(logicalX, logicalY) {
+    const boardRect = refs.boardCanvas.getBoundingClientRect();
+    const viewportX = (logicalX + state.boardOffsetX) * state.boardZoom + refs.boardCanvas.scrollLeft;
+    const viewportY = (logicalY + state.boardOffsetY) * state.boardZoom + refs.boardCanvas.scrollTop;
+    return {
+      x: viewportX + boardRect.left,
+      y: viewportY + boardRect.top
+    };
+  }
+
+  function applyBoardTransform() {
+    refs.boardCanvas.style.setProperty("--board-scale", String(state.boardZoom));
+    refs.boardCanvas.style.setProperty("--board-offset-x", `${state.boardOffsetX}px`);
+    refs.boardCanvas.style.setProperty("--board-offset-y", `${state.boardOffsetY}px`);
+    refs.boardCanvas.style.setProperty("--board-surface-width", `${BOARD_SURFACE_WIDTH}px`);
+    refs.boardCanvas.style.setProperty("--board-surface-height", `${BOARD_SURFACE_HEIGHT}px`);
+    refs.zoomLevel.textContent = `${Math.round(state.boardZoom * 100)}%`;
+    updateZoomControls();
+  }
+
+  function setBoardZoomAround(newZoom, logicalCenterX, logicalCenterY) {
+    const clampedZoom = clamp(newZoom, BOARD_ZOOM_MIN, BOARD_ZOOM_MAX);
+    if (Math.abs(clampedZoom - state.boardZoom) < 0.001) {
+      return;
+    }
+
+    const oldZoom = state.boardZoom;
+    const screenCenter = logicalToScreen(logicalCenterX, logicalCenterY);
+
+    state.boardZoom = clampedZoom;
+
+    const newOffsetX = (screenCenter.x - refs.boardCanvas.getBoundingClientRect().left - refs.boardCanvas.scrollLeft) / state.boardZoom - logicalCenterX;
+    const newOffsetY = (screenCenter.y - refs.boardCanvas.getBoundingClientRect().top - refs.boardCanvas.scrollTop) / state.boardZoom - logicalCenterY;
+
+    state.boardOffsetX = newOffsetX;
+    state.boardOffsetY = newOffsetY;
+
+    applyBoardTransform();
+    requestAnimationFrame(renderWires);
+  }
+
+  function resetBoardView() {
+    state.boardZoom = 1;
+    state.boardOffsetX = 0;
+    state.boardOffsetY = 0;
+    applyBoardTransform();
+    requestAnimationFrame(renderWires);
+  }
+
+  function handleCanvasMouseDown(event) {
+    if (state.dragState) return;
+
+    const isPanButton = event.button === 1 || event.button === 2;
+    const isMiddleClick = event.button === 1;
+    
+    if (isPanButton || (isMiddleClick)) {
+      event.preventDefault();
+      const logicalPos = screenToLogical(event.clientX, event.clientY);
+      state.panState = {
+        startLogicalX: logicalPos.x,
+        startLogicalY: logicalPos.y,
+        startOffsetX: state.boardOffsetX,
+        startOffsetY: state.boardOffsetY
+      };
+      refs.boardCanvas.classList.add("is-panning");
+    }
+  }
+
+  function handleCanvasMouseMove(event) {
+    if (state.panState) {
+      event.preventDefault();
+      const logicalPos = screenToLogical(event.clientX, event.clientY);
+      const deltaX = logicalPos.x - state.panState.startLogicalX;
+      const deltaY = logicalPos.y - state.panState.startLogicalY;
+      
+      state.boardOffsetX = state.panState.startOffsetX - deltaX;
+      state.boardOffsetY = state.panState.startOffsetY - deltaY;
+      
+      applyBoardTransform();
+    }
+  }
+
+  function handleCanvasMouseUp(event) {
+    if (state.panState) {
+      state.panState = null;
+      refs.boardCanvas.classList.remove("is-panning");
+    }
+  }
+
+  function handleCanvasWheel(event) {
+    event.preventDefault();
+    
+    const logicalPos = screenToLogical(event.clientX, event.clientY);
+    const delta = event.deltaY > 0 ? -BOARD_ZOOM_STEP : BOARD_ZOOM_STEP;
+    const newZoom = state.boardZoom + delta;
+    
+    setBoardZoomAround(newZoom, logicalPos.x, logicalPos.y);
+  }
+
+  function getPortAnchorLogical(portRef) {
+    const [instanceId, portId] = portRef.split(":");
+    const component = state.placedComponents.find(c => c.instanceId === instanceId);
+    if (!component) return null;
+
+    const port = component.ports.find(p => p.id === portId);
+    if (!port) return null;
+
+    const leftPorts = component.ports.slice(0, 1);
+    const rightPorts = component.ports.slice(1);
+    
+    let direction = 0;
+    let isLeftSide = false;
+    let isRightSide = false;
+
+    if (rightPorts.length === 0) {
+      if (component.ports[0].id === portId) {
+        isRightSide = true;
+        direction = 1;
+      }
+    } else {
+      if (leftPorts.some(p => p.id === portId)) {
+        isLeftSide = true;
+        direction = -1;
+      }
+      if (rightPorts.some(p => p.id === portId)) {
+        isRightSide = true;
+        direction = 1;
+      }
+    }
+
+    const portStack = isLeftSide ? leftPorts : rightPorts;
+    const portIndex = portStack.findIndex(p => p.id === portId);
+
+    const componentCenterY = component.y + COMPONENT_HEADER_HEIGHT + COMPONENT_BODY_PADDING + 23;
+    const stackTopY = componentCenterY - ((portStack.length - 1) * (PORT_BUTTON_SIZE + PORT_STACK_GAP)) / 2;
+    const portCenterY = stackTopY + portIndex * (PORT_BUTTON_SIZE + PORT_STACK_GAP);
+
+    let portCenterX;
+    let attachPoint;
+
+    if (isLeftSide) {
+      portCenterX = component.x + PORT_STACK_LEFT_OFFSET + PORT_BUTTON_SIZE / 2;
+      attachPoint = { x: component.x + PORT_STACK_LEFT_OFFSET, y: portCenterY };
+    } else if (isRightSide) {
+      portCenterX = component.x + COMPONENT_WIDTH + PORT_STACK_RIGHT_OFFSET - PORT_BUTTON_SIZE / 2;
+      attachPoint = { x: component.x + COMPONENT_WIDTH + PORT_STACK_RIGHT_OFFSET, y: portCenterY };
+    } else {
+      portCenterX = component.x + COMPONENT_WIDTH / 2;
+      attachPoint = { x: portCenterX, y: portCenterY };
+    }
+
+    return {
+      attachPoint: attachPoint,
+      center: { x: portCenterX, y: portCenterY },
+      exitPoint: createLeadPoint(attachPoint, direction, PORT_LEAD_LENGTH),
+      side: isLeftSide ? "left" : isRightSide ? "right" : "auto",
+      direction: direction,
+      componentX: portCenterX,
+      componentY: portCenterY
+    };
+  }
 
   function renderLessons() {
     const template = document.querySelector("#lesson-card-template");
@@ -324,11 +525,11 @@
         return;
       }
 
-      const boardRect = refs.boardCanvas.getBoundingClientRect();
+      const pointerPos = getBoardPointerPosition(event);
       state.dragState = {
         instanceId: component.instanceId,
-        offsetX: event.clientX - boardRect.left - component.x,
-        offsetY: event.clientY - boardRect.top - component.y
+        offsetX: pointerPos.x - component.x,
+        offsetY: pointerPos.y - component.y
       };
       element.classList.add("is-dragging");
       element.setPointerCapture(event.pointerId);
@@ -339,9 +540,9 @@
         return;
       }
 
-      const boardRect = refs.boardCanvas.getBoundingClientRect();
-      component.x = clamp(event.clientX - boardRect.left - state.dragState.offsetX, 20, BOARD_MAX_X);
-      component.y = clamp(event.clientY - boardRect.top - state.dragState.offsetY, 20, BOARD_MAX_Y);
+      const pointerPos = getBoardPointerPosition(event);
+      component.x = clamp(pointerPos.x - state.dragState.offsetX, 20, BOARD_MAX_X);
+      component.y = clamp(pointerPos.y - state.dragState.offsetY, 20, BOARD_MAX_Y);
       element.style.left = `${component.x}px`;
       element.style.top = `${component.y}px`;
       renderWires();
@@ -688,9 +889,8 @@
   }
 
   function renderWires() {
-    const boardRect = refs.boardCanvas.getBoundingClientRect();
-    const width = Math.max(boardRect.width, 1000);
-    const height = Math.max(boardRect.height, 700);
+    const width = Math.max(refs.boardSurface.clientWidth, 1000);
+    const height = Math.max(refs.boardSurface.clientHeight, 700);
     refs.wireLayer.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
     let previewPath = refs.wireLayer.getElementById("preview-wire-path");
@@ -699,14 +899,12 @@
       const fromAnchor = getPortAnchor(state.pendingWireStart);
       if (fromAnchor) {
         let toAnchor = null;
-        let isValidConnection = false;
 
         if (state.hoveredPort && state.hoveredPort !== state.pendingWireStart) {
           const [hoverInstance] = state.hoveredPort.split(":");
           const [startInstance] = state.pendingWireStart.split(":");
           if (hoverInstance !== startInstance) {
             toAnchor = getPortAnchor(state.hoveredPort);
-            isValidConnection = true;
           }
         }
 
@@ -772,29 +970,48 @@
   }
 
   function createVirtualAnchor(fromAnchor, targetPos) {
-    const fromDir = fromAnchor.direction;
-    const fromExit = fromAnchor.exitPoint;
-
+    const deltaX = targetPos.x - fromAnchor.exitPoint.x;
+    const deltaY = targetPos.y - fromAnchor.exitPoint.y;
     let virtualDirection = 0;
-    let virtualExitPoint = { x: targetPos.x, y: targetPos.y };
 
-    if (fromDir === 1) {
-      if (targetPos.x > fromExit.x) {
-        virtualDirection = -1;
+    if (Math.abs(deltaX) > Math.abs(deltaY) + 10) {
+      virtualDirection = deltaX >= 0 ? -1 : 1;
+    } else if (Math.abs(deltaY) > Math.abs(deltaX) + 10) {
+      virtualDirection = deltaY >= 0 ? 2 : -2;
+    } else {
+      if (fromAnchor.direction !== 0) {
+        virtualDirection = fromAnchor.direction;
       } else {
-        virtualDirection = 1;
-      }
-    } else if (fromDir === -1) {
-      if (targetPos.x < fromExit.x) {
-        virtualDirection = 1;
-      } else {
-        virtualDirection = -1;
+        virtualDirection = deltaX >= 0 ? -1 : 1;
       }
     }
 
+    let attachPoint;
+    let exitPoint;
+
+    if (Math.abs(virtualDirection) === 1) {
+      exitPoint = createLeadPoint(targetPos, virtualDirection, PORT_LEAD_LENGTH);
+      if (virtualDirection === -1) {
+        attachPoint = { x: targetPos.x, y: targetPos.y };
+      } else {
+        attachPoint = { x: targetPos.x, y: targetPos.y };
+      }
+    } else if (Math.abs(virtualDirection) === 2) {
+      const yDirection = virtualDirection / 2;
+      exitPoint = {
+        x: targetPos.x,
+        y: targetPos.y + yDirection * PORT_LEAD_LENGTH
+      };
+      attachPoint = { x: targetPos.x, y: targetPos.y };
+    } else {
+      exitPoint = { x: targetPos.x, y: targetPos.y };
+      attachPoint = { x: targetPos.x, y: targetPos.y };
+    }
+
     return {
+      attachPoint: attachPoint,
       center: { x: targetPos.x, y: targetPos.y },
-      exitPoint: virtualExitPoint,
+      exitPoint: exitPoint,
       side: virtualDirection === 1 ? "right" : virtualDirection === -1 ? "left" : "auto",
       direction: virtualDirection,
       componentX: targetPos.x,
@@ -803,237 +1020,337 @@
   }
 
   function createWirePathData(fromAnchor, toAnchor) {
-    const fromExit = fromAnchor.exitPoint;
-    const toEntry = toAnchor.exitPoint;
-
     const points = calculateWireSegments(fromAnchor, toAnchor);
 
     if (points.length < 2) {
       return "";
     }
 
+    return createRoundedOrthogonalPath(points);
+  }
+
+  function calculateWireSegments(fromAnchor, toAnchor) {
+    const startAttach = fromAnchor.attachPoint || fromAnchor.exitPoint;
+    const endAttach = toAnchor.attachPoint || toAnchor.exitPoint;
+    const startExit = fromAnchor.exitPoint;
+    const endExit = toAnchor.exitPoint;
+
+    const points = [startAttach];
+
+    if (!arePointsEqual(startAttach, startExit)) {
+      points.push(startExit);
+    }
+
+    const startLane = createLanePoint(startExit, fromAnchor.direction, MIN_WIRE_SEGMENT);
+    const endLane = createLanePoint(endExit, toAnchor.direction, MIN_WIRE_SEGMENT);
+
+    if (!arePointsEqual(startExit, startLane)) {
+      points.push(startLane);
+    }
+
+    const bridgePoints = calculateWireBridgePoints(startLane, endLane, fromAnchor.direction, toAnchor.direction);
+    bridgePoints.forEach((point) => {
+      points.push(point);
+    });
+
+    if (!arePointsEqual(points[points.length - 1], endLane)) {
+      points.push(endLane);
+    }
+
+    if (!arePointsEqual(endLane, endExit)) {
+      points.push(endExit);
+    }
+
+    if (!arePointsEqual(endExit, endAttach)) {
+      points.push(endAttach);
+    }
+
+    return simplifyOrthogonalPoints(points);
+  }
+
+  function createLanePoint(point, direction, distance) {
+    if (direction === 0) {
+      return { x: point.x, y: point.y };
+    }
+
+    if (Math.abs(direction) === 1) {
+      return {
+        x: point.x + direction * distance,
+        y: point.y
+      };
+    }
+
+    if (Math.abs(direction) === 2) {
+      const yDir = direction / 2;
+      return {
+        x: point.x,
+        y: point.y + yDir * distance
+      };
+    }
+
+    return { x: point.x, y: point.y };
+  }
+
+  function calculateWireBridgePoints(startLane, endLane, startDir, endDir) {
+    if (arePointsEqual(startLane, endLane)) {
+      return [];
+    }
+
+    const startIsHorizontal = Math.abs(startDir) === 1 || startDir === 0;
+    const endIsHorizontal = Math.abs(endDir) === 1 || endDir === 0;
+
+    const startX = startLane.x;
+    const startY = startLane.y;
+    const endX = endLane.x;
+    const endY = endLane.y;
+
+    const sameX = Math.abs(startX - endX) < 1;
+    const sameY = Math.abs(startY - endY) < 1;
+
+    if (sameX || sameY) {
+      return [endLane];
+    }
+
+    if (startIsHorizontal && endIsHorizontal) {
+      const laneX = pickWireLaneX(startLane, endLane, startDir, endDir);
+      
+      const directPathIsBetter = 
+        ((startDir === 1 && endDir === -1 && endX > startX) ||
+         (startDir === -1 && endDir === 1 && endX < startX)) &&
+        Math.abs(endX - startX) > MIN_WIRE_SEGMENT * 2;
+
+      if (directPathIsBetter && sameY) {
+        return [endLane];
+      }
+
+      const midY = (startY + endY) / 2;
+      const startToMidY = Math.abs(midY - startY);
+      const endToMidY = Math.abs(endY - midY);
+
+      if (startToMidY > MIN_WIRE_SEGMENT && endToMidY > MIN_WIRE_SEGMENT) {
+        const useMidY = 
+          (startDir === 1 && endDir === -1 && endX > startX) ||
+          (startDir === -1 && endDir === 1 && endX < startX);
+
+        if (useMidY) {
+          return [
+            { x: startX, y: midY },
+            { x: endX, y: midY },
+            endLane
+          ];
+        }
+      }
+
+      return [
+        { x: laneX, y: startY },
+        { x: laneX, y: endY },
+        endLane
+      ];
+    }
+
+    if (startIsHorizontal) {
+      return [
+        { x: startX, y: endY },
+        endLane
+      ];
+    }
+
+    if (endIsHorizontal) {
+      return [
+        { x: endX, y: startY },
+        endLane
+      ];
+    }
+
+    return [
+      { x: startX, y: endY },
+      endLane
+    ];
+  }
+
+  function pickWireLaneX(startLane, endLane, startDir, endDir) {
+    if (startDir === 1 && endDir === -1) {
+      if (endLane.x >= startLane.x + MIN_WIRE_SEGMENT) {
+        return (startLane.x + endLane.x) / 2;
+      }
+      return Math.max(startLane.x, endLane.x) + MIN_WIRE_SEGMENT;
+    }
+
+    if (startDir === -1 && endDir === 1) {
+      if (endLane.x <= startLane.x - MIN_WIRE_SEGMENT) {
+        return (startLane.x + endLane.x) / 2;
+      }
+      return Math.min(startLane.x, endLane.x) - MIN_WIRE_SEGMENT;
+    }
+
+    if (startDir === 1 && endDir === 1) {
+      return Math.max(startLane.x, endLane.x) + MIN_WIRE_SEGMENT;
+    }
+
+    if (startDir === -1 && endDir === -1) {
+      return Math.min(startLane.x, endLane.x) - MIN_WIRE_SEGMENT;
+    }
+
+    if (startDir === 1) {
+      return Math.max(startLane.x, endLane.x, startLane.x + MIN_WIRE_SEGMENT);
+    }
+
+    if (startDir === -1) {
+      return Math.min(startLane.x, endLane.x, startLane.x - MIN_WIRE_SEGMENT);
+    }
+
+    if (endDir === 1) {
+      return Math.max(startLane.x, endLane.x, endLane.x + MIN_WIRE_SEGMENT);
+    }
+
+    if (endDir === -1) {
+      return Math.min(startLane.x, endLane.x, endLane.x - MIN_WIRE_SEGMENT);
+    }
+
+    return (startLane.x + endLane.x) / 2;
+  }
+
+  function createRoundedOrthogonalPath(points) {
     let d = `M ${points[0].x} ${points[0].y}`;
 
     for (let i = 1; i < points.length; i++) {
+      if (i === points.length - 1) {
+        d += ` L ${points[i].x} ${points[i].y}`;
+        continue;
+      }
+
       const prev = points[i - 1];
       const curr = points[i];
+      const next = points[i + 1];
+      const radius = getCornerRadius(prev, curr, next);
 
-      if (WIRE_CORNER_RADIUS > 0 && i > 1 && i < points.length - 1) {
-        const prevPrev = points[i - 2];
-        const nextNext = i < points.length - 2 ? points[i + 1] : null;
-
+      if (radius <= 0) {
         d += ` L ${curr.x} ${curr.y}`;
-      } else {
-        d += ` L ${curr.x} ${curr.y}`;
+        continue;
       }
+
+      const cornerStart = movePointToward(curr, prev, radius);
+      const cornerEnd = movePointToward(curr, next, radius);
+
+      d += ` L ${cornerStart.x} ${cornerStart.y}`;
+      d += ` Q ${curr.x} ${curr.y} ${cornerEnd.x} ${cornerEnd.y}`;
     }
 
     return d;
   }
 
-  function calculateWireSegments(fromAnchor, toAnchor) {
-    const fromExit = fromAnchor.exitPoint;
-    const toEntry = toAnchor.exitPoint;
-    const fromDir = fromAnchor.direction;
-    const toDir = toAnchor.direction;
+  function getCornerRadius(prev, curr, next) {
+    const prevDistance = distanceBetween(prev, curr);
+    const nextDistance = distanceBetween(curr, next);
 
-    const points = [];
-    points.push({ x: fromExit.x, y: fromExit.y });
-
-    const dx = toEntry.x - fromExit.x;
-    const dy = toEntry.y - fromExit.y;
-    const sameY = Math.abs(dy) < 5;
-
-    if (fromDir === 1 && toDir === -1) {
-      if (dx > 0 && sameY) {
-        points.push({ x: toEntry.x, y: toEntry.y });
-      } else {
-        const midX = (fromExit.x + toEntry.x) / 2;
-        points.push({ x: midX, y: fromExit.y });
-        points.push({ x: midX, y: toEntry.y });
-        points.push({ x: toEntry.x, y: toEntry.y });
-      }
-    } else if (fromDir === -1 && toDir === 1) {
-      if (dx < 0 && sameY) {
-        points.push({ x: toEntry.x, y: toEntry.y });
-      } else {
-        const midX = (fromExit.x + toEntry.x) / 2;
-        points.push({ x: midX, y: fromExit.y });
-        points.push({ x: midX, y: toEntry.y });
-        points.push({ x: toEntry.x, y: toEntry.y });
-      }
-    } else if (fromDir === 1 && toDir === 1) {
-      const farthestX = Math.max(fromExit.x, toEntry.x) + MIN_WIRE_SEGMENT;
-      points.push({ x: farthestX, y: fromExit.y });
-      points.push({ x: farthestX, y: toEntry.y });
-      points.push({ x: toEntry.x, y: toEntry.y });
-    } else if (fromDir === -1 && toDir === -1) {
-      const nearestX = Math.min(fromExit.x, toEntry.x) - MIN_WIRE_SEGMENT;
-      points.push({ x: nearestX, y: fromExit.y });
-      points.push({ x: nearestX, y: toEntry.y });
-      points.push({ x: toEntry.x, y: toEntry.y });
-    } else if (fromDir === 1 && toDir === 0) {
-      const exitX = fromExit.x + MIN_WIRE_SEGMENT;
-      points.push({ x: exitX, y: fromExit.y });
-      if (Math.abs(fromExit.y - toEntry.y) > MIN_WIRE_SEGMENT) {
-        points.push({ x: exitX, y: toEntry.y });
-      }
-      points.push({ x: toEntry.x, y: toEntry.y });
-    } else if (fromDir === -1 && toDir === 0) {
-      const exitX = fromExit.x - MIN_WIRE_SEGMENT;
-      points.push({ x: exitX, y: fromExit.y });
-      if (Math.abs(fromExit.y - toEntry.y) > MIN_WIRE_SEGMENT) {
-        points.push({ x: exitX, y: toEntry.y });
-      }
-      points.push({ x: toEntry.x, y: toEntry.y });
-    } else if (fromDir === 0) {
-      if (Math.abs(dx) > MIN_WIRE_SEGMENT) {
-        const midX = fromExit.x + (toEntry.x - fromExit.x) / 2;
-        points.push({ x: midX, y: fromExit.y });
-        points.push({ x: midX, y: toEntry.y });
-      }
-      points.push({ x: toEntry.x, y: toEntry.y });
-    } else {
-      points.push({ x: toEntry.x, y: toEntry.y });
+    if (prevDistance < 1 || nextDistance < 1) {
+      return 0;
     }
 
-    return points;
+    return Math.min(WIRE_CORNER_RADIUS, prevDistance / 2, nextDistance / 2);
   }
 
-  function createOptimizedWirePathData(from, to, fromSide, toSide) {
-    const MIN_OFFSET = 40;
-    let controlPoint1, controlPoint2;
-
-    let fromOffset = fromSide === "left" ? -MIN_OFFSET : fromSide === "right" ? MIN_OFFSET : 0;
-    let toOffset = toSide === "left" ? -MIN_OFFSET : toSide === "right" ? MIN_OFFSET : 0;
-
-    if (fromOffset === 0) {
-      fromOffset = to.x > from.x ? MIN_OFFSET : -MIN_OFFSET;
-    }
-    if (toOffset === 0) {
-      toOffset = from.x > to.x ? -MIN_OFFSET : MIN_OFFSET;
-    }
-
-    const fromExit = { x: from.x + fromOffset, y: from.y };
-    const toEntry = { x: to.x + toOffset, y: to.y };
-
-    const dx = Math.abs(fromExit.x - toEntry.x);
-    const midX = (fromExit.x + toEntry.x) / 2;
-    const useMidControl = dx > MIN_OFFSET * 2;
-
-    if (useMidControl) {
-      controlPoint1 = { x: midX, y: fromExit.y };
-      controlPoint2 = { x: midX, y: toEntry.y };
-    } else {
-      const avgY = (fromExit.y + toEntry.y) / 2;
-      controlPoint1 = { x: fromExit.x, y: avgY };
-      controlPoint2 = { x: toEntry.x, y: avgY };
-    }
-
-    return `M ${from.x} ${from.y} L ${fromExit.x} ${fromExit.y} C ${controlPoint1.x} ${controlPoint1.y}, ${controlPoint2.x} ${controlPoint2.y}, ${toEntry.x} ${toEntry.y} L ${to.x} ${to.y}`;
-  }
-
-  function createOptimizedWirePath(from, to, fromSide, toSide, isPreview) {
-    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-    path.setAttribute("d", createOptimizedWirePathData(from, to, fromSide, toSide));
-    path.setAttribute("class", `wire-line${isPreview ? " wire-line--preview" : ""}`);
-    return path;
-  }
-
-  function getPortSide(portRef) {
-    const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
-    const port = refs.boardComponents.querySelector(selector);
-    if (!port) return "auto";
-    
-    const portStack = port.closest(".port-stack");
-    if (portStack && portStack.classList.contains("port-stack--left")) return "left";
-    if (portStack && portStack.classList.contains("port-stack--right")) return "right";
-    return "auto";
-  }
-
-  function getPortCenterStable(portRef) {
-    const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
-    const port = refs.boardComponents.querySelector(selector);
-    if (!port) return null;
-
-    let x = 0;
-    let y = 0;
-    let element = port;
-
-    while (element && element !== refs.boardCanvas) {
-      x += element.offsetLeft;
-      y += element.offsetTop;
-      element = element.offsetParent;
+  function movePointToward(from, to, distance) {
+    if (from.x === to.x) {
+      return {
+        x: from.x,
+        y: from.y + Math.sign(to.y - from.y) * distance
+      };
     }
 
     return {
-      x: x + port.offsetWidth / 2,
-      y: y + port.offsetHeight / 2
+      x: from.x + Math.sign(to.x - from.x) * distance,
+      y: from.y
+    };
+  }
+
+  function distanceBetween(a, b) {
+    if (a.x === b.x) {
+      return Math.abs(a.y - b.y);
+    }
+
+    return Math.abs(a.x - b.x);
+  }
+
+  function simplifyOrthogonalPoints(points) {
+    const normalized = [];
+
+    points.forEach((point) => {
+      if (!normalized.length || !arePointsEqual(normalized[normalized.length - 1], point)) {
+        normalized.push(point);
+      }
+    });
+
+    const simplified = [];
+    normalized.forEach((point) => {
+      if (simplified.length < 2) {
+        simplified.push(point);
+        return;
+      }
+
+      const prev = simplified[simplified.length - 1];
+      const prevPrev = simplified[simplified.length - 2];
+
+      if (isCollinear(prevPrev, prev, point)) {
+        simplified[simplified.length - 1] = point;
+      } else {
+        simplified.push(point);
+      }
+    });
+
+    return simplified;
+  }
+
+  function isCollinear(a, b, c) {
+    return (Math.abs(a.x - b.x) < 1 && Math.abs(b.x - c.x) < 1) ||
+      (Math.abs(a.y - b.y) < 1 && Math.abs(b.y - c.y) < 1);
+  }
+
+  function arePointsEqual(a, b) {
+    if (!a || !b) return false;
+    return Math.abs(a.x - b.x) < 1 && Math.abs(a.y - b.y) < 1;
+  }
+
+  function createLeadPoint(point, direction, distance) {
+    if (direction === 0) {
+      return { x: point.x, y: point.y };
+    }
+
+    return {
+      x: point.x + direction * distance,
+      y: point.y
     };
   }
 
   function getPortAnchor(portRef) {
-    const selector = `[data-port-ref="${escapeSelector(portRef)}"]`;
-    const port = refs.boardComponents.querySelector(selector);
-    if (!port) return null;
-
-    const componentEl = port.closest(".board-component");
-    if (!componentEl) return null;
-
-    let portCenterX = 0;
-    let portCenterY = 0;
-    let element = port;
-
-    while (element && element !== refs.boardCanvas) {
-      portCenterX += element.offsetLeft;
-      portCenterY += element.offsetTop;
-      element = element.offsetParent;
-    }
-    portCenterX += port.offsetWidth / 2;
-    portCenterY += port.offsetHeight / 2;
-
-    const portStack = port.closest(".port-stack");
-    const isLeftSide = portStack && portStack.classList.contains("port-stack--left");
-    const isRightSide = portStack && portStack.classList.contains("port-stack--right");
-
-    let componentX = 0;
-    let componentY = 0;
-    let compElement = componentEl;
-    while (compElement && compElement !== refs.boardCanvas) {
-      componentX += compElement.offsetLeft;
-      componentY += compElement.offsetTop;
-      compElement = compElement.offsetParent;
-    }
-
-    let exitPointX, exitPointY;
-    let direction;
-
-    if (isLeftSide) {
-      exitPointX = componentX;
-      exitPointY = portCenterY;
-      direction = -1;
-    } else if (isRightSide) {
-      exitPointX = componentX + COMPONENT_WIDTH;
-      exitPointY = portCenterY;
-      direction = 1;
-    } else {
-      exitPointX = portCenterX;
-      exitPointY = portCenterY;
-      direction = 0;
-    }
-
-    return {
-      center: { x: portCenterX, y: portCenterY },
-      exitPoint: { x: exitPointX, y: exitPointY },
-      side: isLeftSide ? "left" : isRightSide ? "right" : "auto",
-      direction: direction,
-      componentX: componentX,
-      componentY: componentY
-    };
+    return getPortAnchorLogical(portRef);
   }
 
-  function getPortCenter(portRef, boardRect) {
-    return getPortCenterStable(portRef);
+  function getBoardPointerPosition(event) {
+    return screenToLogical(event.clientX, event.clientY);
+  }
+
+  function setBoardZoom(nextZoom) {
+    const canvas = refs.boardCanvas;
+    const centerX = canvas.scrollLeft + canvas.clientWidth / 2;
+    const centerY = canvas.scrollTop + canvas.clientHeight / 2;
+    const boardRect = refs.boardCanvas.getBoundingClientRect();
+    
+    const screenCenterX = boardRect.left + centerX;
+    const screenCenterY = boardRect.top + centerY;
+    const logicalCenter = screenToLogical(screenCenterX, screenCenterY);
+    
+    setBoardZoomAround(nextZoom, logicalCenter.x, logicalCenter.y);
+  }
+
+  function applyBoardZoom() {
+    applyBoardTransform();
+  }
+
+  function updateZoomControls() {
+    refs.zoomOut.disabled = state.boardZoom <= BOARD_ZOOM_MIN + 0.001;
+    refs.zoomIn.disabled = state.boardZoom >= BOARD_ZOOM_MAX - 0.001;
+    refs.zoomReset.disabled = Math.abs(state.boardZoom - 1) < 0.001;
   }
 
   function highlightSelectedPort() {

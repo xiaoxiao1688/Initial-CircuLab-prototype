@@ -93,14 +93,24 @@
                 <strong id="wiring-status">点击一个端口开始布线</strong>
               </div>
               <div class="board-actions">
+                <div class="zoom-controls">
+                  <button id="zoom-out" class="button button--ghost" type="button" aria-label="缩小实验台">-</button>
+                  <strong id="zoom-level" class="zoom-level">100%</strong>
+                  <button id="zoom-in" class="button button--ghost" type="button" aria-label="放大实验台">+</button>
+                  <button id="zoom-reset" class="button button--ghost" type="button">100%</button>
+                </div>
                 <button id="cancel-wire" class="button button--ghost">取消布线</button>
                 <button id="reset-board" class="button button--ghost">重置本关</button>
               </div>
             </div>
 
             <div id="board-canvas" class="board-canvas">
-              <svg id="wire-layer" class="wire-layer"></svg>
-              <div id="board-components" class="board-components"></div>
+              <div id="board-viewport" class="board-viewport">
+                <div id="board-surface" class="board-surface">
+                  <svg id="wire-layer" class="wire-layer"></svg>
+                  <div id="board-components" class="board-components"></div>
+                </div>
+              </div>
             </div>
           </section>
         </section>
