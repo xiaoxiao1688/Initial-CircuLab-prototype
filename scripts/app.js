@@ -20,6 +20,8 @@
   const PORT_STACK_GAP = 14;
   const PORT_STACK_LEFT_OFFSET = -23;
   const PORT_STACK_RIGHT_OFFSET = 23;
+  const PAN_SENSITIVITY = 0.28;
+  const BOARD_PAN_PADDING = 96;
 
   const state = {
     activeLevelId: levels[0].id,
@@ -81,6 +83,9 @@
   refs.zoomIn.addEventListener("click", () => setBoardZoom(state.boardZoom + BOARD_ZOOM_STEP));
   refs.zoomReset.addEventListener("click", resetBoardView);
   window.addEventListener("resize", renderWires);
+  window.addEventListener("mousemove", handleWindowMouseMove);
+  window.addEventListener("mouseup", handleCanvasMouseUp);
+  window.addEventListener("blur", cancelCanvasPan);
 
   refs.boardCanvas.addEventListener("mousedown", handleCanvasMouseDown);
   refs.boardCanvas.addEventListener("mousemove", (event) => {
@@ -122,6 +127,7 @@
   }
 
   function applyBoardTransform() {
+    clampBoardOffsets();
     refs.boardCanvas.style.setProperty("--board-scale", String(state.boardZoom));
     refs.boardCanvas.style.setProperty("--board-offset-x", `${state.boardOffsetX}px`);
     refs.boardCanvas.style.setProperty("--board-offset-y", `${state.boardOffsetY}px`);
@@ -163,15 +169,11 @@
   function handleCanvasMouseDown(event) {
     if (state.dragState) return;
 
-    const isPanButton = event.button === 1 || event.button === 2;
-    const isMiddleClick = event.button === 1;
-    
-    if (isPanButton || (isMiddleClick)) {
+    if (event.button === 2) {
       event.preventDefault();
-      const logicalPos = screenToLogical(event.clientX, event.clientY);
       state.panState = {
-        startLogicalX: logicalPos.x,
-        startLogicalY: logicalPos.y,
+        startClientX: event.clientX,
+        startClientY: event.clientY,
         startOffsetX: state.boardOffsetX,
         startOffsetY: state.boardOffsetY
       };
@@ -182,15 +184,20 @@
   function handleCanvasMouseMove(event) {
     if (state.panState) {
       event.preventDefault();
-      const logicalPos = screenToLogical(event.clientX, event.clientY);
-      const deltaX = logicalPos.x - state.panState.startLogicalX;
-      const deltaY = logicalPos.y - state.panState.startLogicalY;
-      
-      state.boardOffsetX = state.panState.startOffsetX - deltaX;
-      state.boardOffsetY = state.panState.startOffsetY - deltaY;
+      const deltaX = ((event.clientX - state.panState.startClientX) / state.boardZoom) * PAN_SENSITIVITY;
+      const deltaY = ((event.clientY - state.panState.startClientY) / state.boardZoom) * PAN_SENSITIVITY;
+
+      state.boardOffsetX = state.panState.startOffsetX + deltaX;
+      state.boardOffsetY = state.panState.startOffsetY + deltaY;
       
       applyBoardTransform();
+      requestAnimationFrame(renderWires);
     }
+  }
+
+  function handleWindowMouseMove(event) {
+    if (!state.panState) return;
+    handleCanvasMouseMove(event);
   }
 
   function handleCanvasMouseUp(event) {
@@ -198,6 +205,12 @@
       state.panState = null;
       refs.boardCanvas.classList.remove("is-panning");
     }
+  }
+
+  function cancelCanvasPan() {
+    if (!state.panState) return;
+    state.panState = null;
+    refs.boardCanvas.classList.remove("is-panning");
   }
 
   function handleCanvasWheel(event) {
@@ -208,6 +221,28 @@
     const newZoom = state.boardZoom + delta;
     
     setBoardZoomAround(newZoom, logicalPos.x, logicalPos.y);
+  }
+
+  function clampBoardOffsets() {
+    const viewportWidth = refs.boardCanvas.clientWidth / state.boardZoom;
+    const viewportHeight = refs.boardCanvas.clientHeight / state.boardZoom;
+
+    const minOffsetX = viewportWidth - BOARD_SURFACE_WIDTH - BOARD_PAN_PADDING;
+    const maxOffsetX = BOARD_PAN_PADDING;
+    const minOffsetY = viewportHeight - BOARD_SURFACE_HEIGHT - BOARD_PAN_PADDING;
+    const maxOffsetY = BOARD_PAN_PADDING;
+
+    if (minOffsetX > maxOffsetX) {
+      state.boardOffsetX = (viewportWidth - BOARD_SURFACE_WIDTH) / 2;
+    } else {
+      state.boardOffsetX = clamp(state.boardOffsetX, minOffsetX, maxOffsetX);
+    }
+
+    if (minOffsetY > maxOffsetY) {
+      state.boardOffsetY = (viewportHeight - BOARD_SURFACE_HEIGHT) / 2;
+    } else {
+      state.boardOffsetY = clamp(state.boardOffsetY, minOffsetY, maxOffsetY);
+    }
   }
 
   function getPortAnchorLogical(portRef) {
@@ -519,6 +554,10 @@
     }
 
     element.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) {
+        return;
+      }
+
       if (event.target.closest(".port-button") || 
           event.target.closest(".board-component__remove") ||
           event.target.closest(".switch-indicator")) {
@@ -579,6 +618,9 @@
     if (hasPoweredPort) {
       if (componentId === "led") return "is-lit-led";
       if (componentId === "lamp") return "is-lit-lamp";
+      if (["resistor", "motor", "fan", "buzzer", "capacitor", "fuse"].includes(componentId)) {
+        return "is-lit-load";
+      }
     }
     return "";
   }
@@ -1440,7 +1482,12 @@
       switch: "SW",
       resistor: "R",
       led: "LED",
-      lamp: "LAMP"
+      lamp: "LAMP",
+      motor: "MTR",
+      fan: "FAN",
+      buzzer: "BUZ",
+      capacitor: "CAP",
+      fuse: "FUSE"
     };
     return map[componentId] || componentId.toUpperCase();
   }

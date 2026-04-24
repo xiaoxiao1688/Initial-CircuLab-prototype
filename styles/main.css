@@ -43,7 +43,7 @@ button {
 }
 
 .app-shell {
-  max-width: 1600px;
+  max-width: 1840px;
   margin: 0 auto;
   padding: 32px 20px 40px;
 }
@@ -152,8 +152,8 @@ button {
 
 .eda-layout {
   display: grid;
-  grid-template-columns: 320px minmax(0, 1fr) 320px;
-  gap: 24px;
+  grid-template-columns: 252px minmax(0, 1.5fr) 276px;
+  gap: 20px;
   align-items: start;
 }
 
@@ -177,6 +177,7 @@ button {
 
 .panel--board {
   overflow: hidden;
+  padding: 28px 28px 32px;
 }
 
 .panel__heading {
@@ -409,7 +410,7 @@ button {
   --board-surface-width: 1120px;
   --board-surface-height: 760px;
   position: relative;
-  min-height: 760px;
+  min-height: 880px;
   border-radius: 22px;
   overflow: auto;
   border: 1px solid rgba(35, 32, 27, 0.08);
@@ -438,7 +439,7 @@ button {
 .board-viewport {
   position: relative;
   width: max(100%, calc(var(--board-surface-width) * var(--board-scale)));
-  min-height: max(760px, calc(var(--board-surface-height) * var(--board-scale)));
+  min-height: max(880px, calc(var(--board-surface-height) * var(--board-scale)));
 }
 
 .board-surface {
@@ -771,6 +772,12 @@ button {
   animation: lampGlow 2s ease-in-out infinite;
 }
 
+.component-symbol.is-lit-load {
+  background: linear-gradient(135deg, rgba(125, 211, 252, 0.34), rgba(56, 189, 248, 0.2));
+  color: #0369a1;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.32);
+}
+
 @keyframes lampGlow {
   0%, 100% { 
     box-shadow: 0 0 15px rgba(255, 200, 100, 0.6);
@@ -869,7 +876,7 @@ button {
 
 @media (max-width: 1320px) {
   .eda-layout {
-    grid-template-columns: 280px minmax(0, 1fr);
+    grid-template-columns: 236px minmax(0, 1fr);
   }
 
   .info-panel {
@@ -903,6 +910,6 @@ button {
   }
 
   .board-canvas {
-    min-height: 620px;
+    min-height: 700px;
   }
 }
