@@ -1,25 +1,16 @@
 (function () {
-  function buildGraph(components, connections) {
+  function buildGraph(components, connections, switchStates = {}) {
     const graph = {};
-    const meta = {};
 
     components.forEach((component) => {
       component.ports.forEach((port) => {
         const portId = `${component.instanceId}:${port.id}`;
         graph[portId] = graph[portId] || new Set();
-        meta[portId] = {
-          componentId: component.id,
-          instanceId: component.instanceId,
-          portId: port.id,
-          label: port.label
-        };
       });
 
-      const conductivePairs = getInternalConductivePairs(component);
+      const conductivePairs = getInternalConductivePairs(component, switchStates);
       conductivePairs.forEach(([from, to]) => {
-        const fromId = `${component.instanceId}:${from}`;
-        const toId = `${component.instanceId}:${to}`;
-        connect(graph, fromId, toId);
+        connect(graph, `${component.instanceId}:${from}`, `${component.instanceId}:${to}`);
       });
     });
 
@@ -27,11 +18,19 @@
       connect(graph, connection.from, connection.to);
     });
 
-    return { graph, meta };
+    return { graph };
   }
 
-  function getInternalConductivePairs(component) {
+  function getInternalConductivePairs(component, switchStates = {}) {
     if (component.id === "led") {
+      return [];
+    }
+
+    if (component.id === "switch") {
+      const isClosed = switchStates[component.instanceId] === true;
+      if (isClosed && component.ports.length >= 2) {
+        return [[component.ports[0].id, component.ports[1].id]];
+      }
       return [];
     }
 
@@ -82,14 +81,13 @@
     return `${instanceId}:${portId}`;
   }
 
-  function validate(level, components, connections) {
+  function validate(level, components, connections, switchStates = {}) {
     const requiredFindings = [];
     const issues = [];
 
-    const { graph } = buildGraph(components, connections);
-    const batteries = getComponentsById(components, "battery");
+    const { graph } = buildGraph(components, connections, switchStates);
 
-    if (batteries.length === 0) {
+    if (getComponentsById(components, "battery").length === 0) {
       issues.push("缺少电池，当前电路没有电源。");
     }
 
@@ -109,6 +107,10 @@
 
     if (level.objective === "parallel-loads") {
       evaluateParallelLevel({ components, graph, issues, requiredFindings });
+    }
+
+    if (level.objective === "resistor-protects-led") {
+      evaluateResistorLevel({ components, graph, issues, requiredFindings });
     }
 
     const passed = issues.length === 0;
@@ -135,10 +137,9 @@
 
     const posToAnode = hasPath(graph, batteryPositive, ledAnode);
     const cathodeToNeg = hasPath(graph, ledCathode, batteryNegative);
-    const loopExists = posToAnode && cathodeToNeg;
 
     if (posToAnode) {
-      requiredFindings.push("电池正极已经连到 LED 正端。");
+      requiredFindings.push("电池正极已经连接到 LED 正端。");
     } else {
       issues.push("电池正极还没有有效连接到 LED 正端。");
     }
@@ -149,7 +150,7 @@
       issues.push("LED 负端还没有回到电池负极。");
     }
 
-    if (loopExists) {
+    if (posToAnode && cathodeToNeg) {
       requiredFindings.push("已经形成符合教学模型的闭合 LED 回路。");
     } else {
       issues.push("电路没有形成完整闭合回路。");
@@ -180,7 +181,7 @@
     if (throughSwitch) {
       requiredFindings.push("主路径已经经过开关并连接到 LED。");
     } else {
-      issues.push("开关没有真正串入主回路。请让正极到 LED 的路径经过开关。");
+      issues.push("开关没有真正串入主回路，请让正极到 LED 的路径经过开关。");
     }
 
     if (ledBack) {
@@ -218,10 +219,8 @@
       const exitPort = load.id === "led" ? "cathode" : "b";
       const entryId = resolvePort(load.instanceId, entryPort);
       const exitId = resolvePort(load.instanceId, exitPort);
-      const entryPath = hasPath(graph, batteryPositive, entryId);
-      const exitPath = hasPath(graph, exitId, batteryNegative);
 
-      if (entryPath && exitPath) {
+      if (hasPath(graph, batteryPositive, entryId) && hasPath(graph, exitId, batteryNegative)) {
         validBranches += 1;
       }
     });
@@ -243,7 +242,7 @@
     if (validBranches === 2) {
       requiredFindings.push("两个负载都形成了各自通向电源负极的独立支路。");
     } else {
-      issues.push("两个负载还没有都形成独立支路，当前结构不像标准并联。");
+      issues.push("两个负载还没有都形成独立支路，当前结构不够像标准并联。");
     }
 
     if (!seriesLike) {
@@ -253,13 +252,61 @@
     }
   }
 
+  function evaluateResistorLevel({ components, graph, issues, requiredFindings }) {
+    const battery = components.find((component) => component.id === "battery");
+    const led = components.find((component) => component.id === "led");
+    const resistor = components.find((component) => component.id === "resistor");
+
+    if (!battery || !led || !resistor) {
+      return;
+    }
+
+    const batteryPositive = resolvePort(battery.instanceId, "positive");
+    const batteryNegative = resolvePort(battery.instanceId, "negative");
+    const ledAnode = resolvePort(led.instanceId, "anode");
+    const ledCathode = resolvePort(led.instanceId, "cathode");
+    const resistorA = resolvePort(resistor.instanceId, "a");
+    const resistorB = resolvePort(resistor.instanceId, "b");
+
+    const positiveToResistor = hasPath(graph, batteryPositive, resistorA) || hasPath(graph, batteryPositive, resistorB);
+    const resistorToLed = hasPath(graph, resistorA, ledAnode) || hasPath(graph, resistorB, ledAnode);
+    const ledBack = hasPath(graph, ledCathode, batteryNegative);
+    const blockedNodes = new Set([resistorA, resistorB]);
+    const bypassResistor = hasPath(graph, batteryPositive, ledAnode, blockedNodes);
+
+    if (positiveToResistor) {
+      requiredFindings.push("电池正极已经先接到电阻。");
+    } else {
+      issues.push("电池正极还没有先连接到电阻。");
+    }
+
+    if (resistorToLed) {
+      requiredFindings.push("电阻已经串到 LED 正端之前。");
+    } else {
+      issues.push("还没有形成从电阻到 LED 正端的主路径。");
+    }
+
+    if (ledBack) {
+      requiredFindings.push("LED 负端已经回到电池负极。");
+    } else {
+      issues.push("LED 负端还没有回到电池负极。");
+    }
+
+    if (!bypassResistor && positiveToResistor && resistorToLed) {
+      requiredFindings.push("没有发现绕过电阻直达 LED 的旁路。");
+    } else if (bypassResistor) {
+      issues.push("检测到正极可以绕过电阻直接到 LED，电阻没有真正串入主回路。");
+    }
+  }
+
   function getDisplayName(componentId) {
     const map = {
       battery: "电池",
       led: "LED",
       switch: "开关",
       wire: "导线",
-      lamp: "小灯泡"
+      lamp: "小灯泡",
+      resistor: "电阻"
     };
 
     return map[componentId] || componentId;
@@ -269,4 +316,3 @@
     validate
   };
 })();
-
