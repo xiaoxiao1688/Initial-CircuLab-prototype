@@ -750,10 +750,6 @@
       indicator.classList.toggle("is-closed", state.switchStates[instanceId]);
     }
 
-    if (state.isRunning) {
-      calculatePoweredPaths();
-      renderBoard();
-    }
     if (shouldResimulate) {
       requestSimulation();
     }
@@ -901,6 +897,38 @@
     positiveReachable.forEach((portRef) => {
       if (negativeReachable.has(portRef)) {
         state.poweredPorts.add(portRef);
+      }
+    });
+
+    state.connections.forEach((connection) => {
+      if (state.poweredPorts.has(connection.from) && state.poweredPorts.has(connection.to)) {
+        state.poweredConnections.add(connection.id);
+      }
+    });
+  }
+
+  function calculatePoweredPathsFromSimulation() {
+    state.poweredPorts = new Set();
+    state.poweredConnections = new Set();
+
+    if (!state.simulation.data || !state.simulation.data.operatingPoint) {
+      return;
+    }
+
+    const componentResults = state.simulation.data.operatingPoint.components || [];
+    const poweredInstanceIds = new Set();
+
+    componentResults.forEach((result) => {
+      if (result.current > 0 || result.voltage > 0) {
+        poweredInstanceIds.add(result.instanceId);
+      }
+    });
+
+    state.placedComponents.forEach((component) => {
+      if (poweredInstanceIds.has(component.instanceId)) {
+        component.ports.forEach((port) => {
+          state.poweredPorts.add(`${component.instanceId}:${port.id}`);
+        });
       }
     });
 
@@ -1606,7 +1634,6 @@
     };
 
     const shouldResimulate = state.isRunning || state.simulation.hasRun;
-    invalidateAnalysisState();
     renderPlacedComponents();
     if (shouldResimulate) {
       requestSimulation();
@@ -1928,6 +1955,11 @@
       .join("");
 
     renderWaveformTraces(data.waveform);
+
+    if (state.isRunning) {
+      calculatePoweredPathsFromSimulation();
+      renderBoard();
+    }
   }
 
   function renderWaveformTraces(waveform) {

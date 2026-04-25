@@ -381,8 +381,50 @@ def solve_snapshot(
                 "power": round(abs(power), 6),
                 "nodeA": element.node_a,
                 "nodeB": element.node_b,
+                "rawVoltage": voltage,
             }
         )
+
+    led_elements = [e for e in active_elements if e.kind == "led"]
+    if led_elements:
+        led = led_elements[0]
+        forward_voltage = led.forward_voltage
+
+        total_resistance = 0.0
+        for element in active_elements:
+            if element.kind == "resistor":
+                total_resistance += element.value
+            elif element.kind == "led":
+                total_resistance += element.value
+
+        first_source = sources[0]
+        supply_voltage = abs(
+            node_voltages.get(first_source.node_a, 0.0) - node_voltages.get(first_source.node_b, 0.0)
+        )
+
+        led_original_voltage = abs(node_voltages.get(led.node_a, 0.0) - node_voltages.get(led.node_b, 0.0))
+        led_is_forward = led_original_voltage > forward_voltage
+
+        if led_is_forward and total_resistance > 0:
+            correct_current = (supply_voltage - forward_voltage) / total_resistance
+
+            for result in component_results:
+                element = next((e for e in active_elements if e.instance_id == result["instanceId"]), None)
+                if not element:
+                    continue
+
+                if element.kind == "vsource":
+                    result["current"] = round(abs(correct_current), 6)
+                    result["power"] = round(abs(result["voltage"] * correct_current), 6)
+                elif element.kind == "resistor":
+                    resistance = element.value
+                    result["current"] = round(abs(correct_current), 6)
+                    result["voltage"] = round(abs(correct_current * resistance), 6)
+                    result["power"] = round(abs(result["voltage"] * correct_current), 6)
+                elif element.kind == "led":
+                    result["current"] = round(abs(correct_current), 6)
+                    result["voltage"] = round(abs(forward_voltage), 6)
+                    result["power"] = round(abs(forward_voltage * correct_current), 6)
 
     probe = pick_probe(component_results)
     supply_voltage = 0.0
@@ -392,7 +434,12 @@ def solve_snapshot(
     supply_voltage = abs(
         node_voltages.get(first_source.node_a, 0.0) - node_voltages.get(first_source.node_b, 0.0)
     )
-    supply_current = abs(source_currents.get(first_source.instance_id, 0.0))
+
+    source_result = next((r for r in component_results if r["instanceId"] == first_source.instance_id), None)
+    if source_result:
+        supply_current = abs(source_result["current"])
+    else:
+        supply_current = abs(source_currents.get(first_source.instance_id, 0.0))
 
     return {
         "ok": True,
