@@ -89,6 +89,9 @@
 
             <div class="board-toolbar">
               <div class="board-hint">
+                <button id="toggle-sidebar" class="button button--ghost sidebar-toggle" type="button" aria-label="切换侧边栏">
+                  <span class="sidebar-toggle-icon">☰</span>
+                </button>
                 <span class="badge">布线状态</span>
                 <strong id="wiring-status">点击一个端口开始布线</strong>
               </div>
@@ -149,8 +152,22 @@
               </div>
             </div>
           </section>
+
+          <section class="panel simulation-panel">
+            <div class="panel__heading">
+              <h2>仿真波形</h2>
+              <span id="simulation-status" class="badge">未运行</span>
+            </div>
+            <div id="simulation-summary" class="simulation-summary">
+              点击“验证电路”后会调用 Python 仿真器，返回电压、电流和波形结果。
+            </div>
+            <div id="simulation-metrics" class="simulation-metrics"></div>
+            <div id="waveform-traces" class="waveform-traces"></div>
+          </section>
         </aside>
       </main>
+
+      <div id="sidebar-overlay" class="sidebar-overlay"></div>
     </div>
 
     <template id="lesson-card-template">

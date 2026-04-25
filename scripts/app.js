@@ -8,10 +8,12 @@
   const BOARD_ZOOM_MIN = 0.6;
   const BOARD_ZOOM_MAX = 1.8;
   const BOARD_ZOOM_STEP = 0.2;
+  const GRID_SIZE = 32;
 
   const MIN_WIRE_SEGMENT = 30;
   const WIRE_CORNER_RADIUS = 8;
   const PORT_LEAD_LENGTH = 18;
+  const PORT_SNAP_DISTANCE = 32;
 
   const COMPONENT_WIDTH = 168;
   const COMPONENT_HEADER_HEIGHT = 52;
@@ -22,6 +24,36 @@
   const PORT_STACK_RIGHT_OFFSET = 23;
   const PAN_SENSITIVITY = 0.28;
   const BOARD_PAN_PADDING = 96;
+  const COMPONENT_PARAMETER_DEFS = {
+    battery: [
+      { key: "voltage", label: "电压", unit: "V", min: 0.5, max: 48, step: 0.1, defaultValue: 5 }
+    ],
+    resistor: [
+      { key: "resistance", label: "电阻", unit: "Ω", min: 1, max: 100000, step: 1, defaultValue: 220 }
+    ],
+    led: [
+      { key: "resistance", label: "串联电阻", unit: "Ω", min: 1, max: 10000, step: 1, defaultValue: 180 },
+      { key: "forwardVoltage", label: "正向压降", unit: "V", min: 0.5, max: 5, step: 0.1, defaultValue: 2.0 }
+    ],
+    lamp: [
+      { key: "resistance", label: "灯丝电阻", unit: "Ω", min: 1, max: 10000, step: 1, defaultValue: 120 }
+    ],
+    motor: [
+      { key: "resistance", label: "绕组电阻", unit: "Ω", min: 1, max: 10000, step: 1, defaultValue: 56 }
+    ],
+    fan: [
+      { key: "resistance", label: "等效电阻", unit: "Ω", min: 1, max: 10000, step: 1, defaultValue: 68 }
+    ],
+    buzzer: [
+      { key: "resistance", label: "等效电阻", unit: "Ω", min: 1, max: 10000, step: 1, defaultValue: 150 }
+    ],
+    capacitor: [
+      { key: "capacitance", label: "电容值", unit: "F", min: 0.000001, max: 0.01, step: 0.000001, defaultValue: 0.0001 }
+    ],
+    fuse: [
+      { key: "resistance", label: "熔丝电阻", unit: "Ω", min: 0.01, max: 100, step: 0.01, defaultValue: 0.2 }
+    ]
+  };
 
   const state = {
     activeLevelId: levels[0].id,
@@ -40,7 +72,15 @@
     mousePosition: { x: 0, y: 0 },
     hoveredPort: null,
     poweredPorts: new Set(),
-    poweredConnections: new Set()
+    poweredConnections: new Set(),
+    sidebarOpen: false,
+    simulation: {
+      status: "idle",
+      data: null,
+      error: "",
+      hasRun: false
+    },
+    simulationRequestSeq: 0
   };
 
   const refs = {
@@ -68,7 +108,15 @@
     zoomOut: document.querySelector("#zoom-out"),
     zoomIn: document.querySelector("#zoom-in"),
     zoomReset: document.querySelector("#zoom-reset"),
-    zoomLevel: document.querySelector("#zoom-level")
+    zoomLevel: document.querySelector("#zoom-level"),
+    toggleSidebar: document.querySelector("#toggle-sidebar"),
+    sidebarOverlay: document.querySelector("#sidebar-overlay"),
+    toolPanel: document.querySelector(".tool-panel"),
+    infoPanel: document.querySelector(".info-panel"),
+    simulationStatus: document.querySelector("#simulation-status"),
+    simulationSummary: document.querySelector("#simulation-summary"),
+    simulationMetrics: document.querySelector("#simulation-metrics"),
+    waveformTraces: document.querySelector("#waveform-traces")
   };
 
   document.querySelector("#jump-to-lab").addEventListener("click", () => {
@@ -82,7 +130,20 @@
   refs.zoomOut.addEventListener("click", () => setBoardZoom(state.boardZoom - BOARD_ZOOM_STEP));
   refs.zoomIn.addEventListener("click", () => setBoardZoom(state.boardZoom + BOARD_ZOOM_STEP));
   refs.zoomReset.addEventListener("click", resetBoardView);
-  window.addEventListener("resize", renderWires);
+  
+  if (refs.toggleSidebar) {
+    refs.toggleSidebar.addEventListener("click", toggleSidebar);
+  }
+  if (refs.sidebarOverlay) {
+    refs.sidebarOverlay.addEventListener("click", closeSidebar);
+  }
+  
+  window.addEventListener("resize", () => {
+    renderWires();
+    if (window.innerWidth > 720 && state.sidebarOpen) {
+      closeSidebar();
+    }
+  });
   window.addEventListener("mousemove", handleWindowMouseMove);
   window.addEventListener("mouseup", handleCanvasMouseUp);
   window.addEventListener("blur", cancelCanvasPan);
@@ -91,6 +152,7 @@
   refs.boardCanvas.addEventListener("mousemove", (event) => {
     handleCanvasMouseMove(event);
     state.mousePosition = screenToLogical(event.clientX, event.clientY);
+    checkPortProximity(state.mousePosition);
     if (state.pendingWireStart) {
       requestAnimationFrame(renderWires);
     }
@@ -105,6 +167,7 @@
   renderLevels();
   bootstrapLevel(getActiveLevel());
   renderProgress();
+  renderSimulation();
 
   function screenToLogical(screenX, screenY) {
     const boardRect = refs.boardCanvas.getBoundingClientRect();
@@ -376,6 +439,7 @@
     refs.feedbackFail.innerHTML = "";
     refs.feedbackBadge.textContent = "待验证";
     refs.feedbackBadge.className = "badge";
+    clearSimulationState();
     
     refs.boardCanvas.classList.remove("is-running");
     if (refs.boardToolbar) {
@@ -408,6 +472,7 @@
         if (component.id === "switch") {
           state.switchStates[instance.instanceId] = true;
         }
+        invalidateAnalysisState();
         state.placedComponents.push(instance);
         renderPlacedComponents();
         renderBoard();
@@ -428,6 +493,7 @@
     state.placedComponents.forEach((component) => {
       const row = document.createElement("div");
       row.className = "active-component-row";
+      const parameterDefs = getComponentParameterDefinitions(component.id);
       row.innerHTML = `
         <div>
           <strong>${component.instanceId}</strong>
@@ -435,8 +501,44 @@
         </div>
         <button class="button button--ghost">移除</button>
       `;
-      row.querySelector("button").addEventListener("click", () => {
+      const infoBlock = row.querySelector("div");
+      const removeButton = row.querySelector("button");
+      if (infoBlock) {
+        infoBlock.classList.add("active-component-row__main");
+        if (parameterDefs.length) {
+          infoBlock.insertAdjacentHTML(
+            "beforeend",
+            `
+              <div class="component-parameter-grid">
+                ${parameterDefs.map((definition) => `
+                  <label class="component-parameter-field">
+                    <span>${definition.label}</span>
+                    <div class="component-parameter-input">
+                      <input
+                        type="number"
+                        class="parameter-input"
+                        data-instance-id="${component.instanceId}"
+                        data-parameter-key="${definition.key}"
+                        min="${definition.min}"
+                        max="${definition.max}"
+                        step="${definition.step}"
+                        value="${formatEditableNumber(component.parameters?.[definition.key] ?? definition.defaultValue)}"
+                      />
+                      <em>${definition.unit}</em>
+                    </div>
+                  </label>
+                `).join("")}
+              </div>
+            `
+          );
+        }
+      }
+      removeButton.classList.add("active-component-row__remove");
+      removeButton.addEventListener("click", () => {
         removeComponent(component.instanceId);
+      });
+      row.querySelectorAll(".parameter-input").forEach((input) => {
+        input.addEventListener("change", handleParameterInputChange);
       });
       refs.activeComponents.appendChild(row);
     });
@@ -458,9 +560,10 @@
         <button class="button button--ghost">删除</button>
       `;
       item.querySelector("button").addEventListener("click", () => {
+        invalidateAnalysisState();
         state.connections = state.connections.filter((entry) => entry.id !== connection.id);
         renderConnections();
-        renderWires();
+        renderBoard();
       });
       refs.connectionList.appendChild(item);
     });
@@ -485,6 +588,10 @@
     if (state.isRunning) {
       element.classList.add("is-running");
     }
+    element.classList.toggle(
+      "is-powered",
+      state.isRunning && component.ports.some((port) => state.poweredPorts.has(`${component.instanceId}:${port.id}`))
+    );
 
     const leftPorts = component.ports.slice(0, 1);
     const rightPorts = component.ports.slice(1);
@@ -572,6 +679,7 @@
       };
       element.classList.add("is-dragging");
       element.setPointerCapture(event.pointerId);
+      bringComponentToFront(component.instanceId);
     });
 
     element.addEventListener("pointermove", (event) => {
@@ -580,10 +688,17 @@
       }
 
       const pointerPos = getBoardPointerPosition(event);
-      component.x = clamp(pointerPos.x - state.dragState.offsetX, 20, BOARD_MAX_X);
-      component.y = clamp(pointerPos.y - state.dragState.offsetY, 20, BOARD_MAX_Y);
+      const rawX = pointerPos.x - state.dragState.offsetX;
+      const rawY = pointerPos.y - state.dragState.offsetY;
+      
+      const snappedPos = snapPositionToGrid(rawX, rawY);
+      component.x = clamp(snappedPos.x, 20, BOARD_MAX_X);
+      component.y = clamp(snappedPos.y, 20, BOARD_MAX_Y);
       element.style.left = `${component.x}px`;
       element.style.top = `${component.y}px`;
+      
+      updateGridAlignmentHint(component.x, component.y);
+      
       renderWires();
       renderPlacedComponents();
     });
@@ -595,6 +710,7 @@
 
       state.dragState = null;
       element.classList.remove("is-dragging");
+      hideGridAlignmentHint();
     };
 
     element.addEventListener("pointerup", endDrag);
@@ -605,7 +721,6 @@
 
   function getSymbolClass(componentId, instanceId) {
     if (!state.isRunning) return "";
-    if (componentId === "battery") return "is-lit";
 
     const component = state.placedComponents.find((c) => c.instanceId === instanceId);
     if (!component) return "";
@@ -626,6 +741,7 @@
   }
 
   function toggleSwitch(instanceId) {
+    const shouldResimulate = state.isRunning || state.simulation.hasRun;
     state.switchStates[instanceId] = !state.switchStates[instanceId];
     const indicator = refs.boardComponents.querySelector(
       `.switch-indicator[data-instance-id="${instanceId}"]`
@@ -637,6 +753,9 @@
     if (state.isRunning) {
       calculatePoweredPaths();
       renderBoard();
+    }
+    if (shouldResimulate) {
+      requestSimulation();
     }
   }
 
@@ -689,16 +808,18 @@
       from: state.pendingWireStart,
       to: portRef
     });
+    invalidateAnalysisState();
     state.pendingWireStart = null;
     updateWiringStatus();
     highlightSelectedPort();
     renderConnections();
-    renderWires();
+    renderBoard();
   }
 
   function clearConnections() {
     state.connections = [];
     cancelPendingWire();
+    clearSimulationState();
     if (state.isRunning) {
       exitRunningState();
     }
@@ -729,6 +850,7 @@
     }
 
     setFeedback(result);
+    requestSimulation();
   }
 
   function enterRunningState() {
@@ -768,39 +890,63 @@
       state.switchStates
     );
 
-    const visited = new Set();
-    const queue = [positivePort];
-    visited.add(positivePort);
-    state.poweredPorts.add(positivePort);
+    const positiveReachable = collectReachableNodes(graph, positivePort);
+    const negativeReachable = collectReachableNodes(graph, negativePort);
 
-    while (queue.length > 0) {
-      const current = queue.shift();
-      const neighbors = graph[current] || new Set();
-
-      neighbors.forEach((next) => {
-        if (!visited.has(next)) {
-          visited.add(next);
-          state.poweredPorts.add(next);
-
-          const conn = state.connections.find(
-            (c) =>
-              (c.from === current && c.to === next) ||
-              (c.from === next && c.to === current)
-          );
-          if (conn) {
-            state.poweredConnections.add(conn.id);
-          }
-
-          queue.push(next);
-        }
-      });
+    if (!positiveReachable.has(negativePort)) {
+      return;
     }
 
-    if (state.poweredPorts.has(negativePort)) {
-      state.poweredPorts.add(negativePort);
-    }
+    state.poweredPorts = new Set();
+    positiveReachable.forEach((portRef) => {
+      if (negativeReachable.has(portRef)) {
+        state.poweredPorts.add(portRef);
+      }
+    });
+
+    state.connections.forEach((connection) => {
+      if (state.poweredPorts.has(connection.from) && state.poweredPorts.has(connection.to)) {
+        state.poweredConnections.add(connection.id);
+      }
+    });
   }
 
+  function calculatePoweredPathsFromSimulation() {
+    state.poweredPorts = new Set();
+    state.poweredConnections = new Set();
+
+    if (!state.simulation.data || !state.simulation.data.operatingPoint) {
+      return;
+    }
+
+    const componentResults = state.simulation.data.operatingPoint.components || [];
+    const ignoredComponents = state.simulation.data.operatingPoint.ignoredComponents || [];
+    const ignoredSet = new Set(ignoredComponents);
+    const poweredInstanceIds = new Set();
+
+    componentResults.forEach((result) => {
+      if (ignoredSet.has(result.instanceId)) {
+        return;
+      }
+      if (result.current > 0) {
+        poweredInstanceIds.add(result.instanceId);
+      }
+    });
+
+    state.placedComponents.forEach((component) => {
+      if (poweredInstanceIds.has(component.instanceId)) {
+        component.ports.forEach((port) => {
+          state.poweredPorts.add(`${component.instanceId}:${port.id}`);
+        });
+      }
+    });
+
+    state.connections.forEach((connection) => {
+      if (state.poweredPorts.has(connection.from) && state.poweredPorts.has(connection.to)) {
+        state.poweredConnections.add(connection.id);
+      }
+    });
+  }
   function buildGraphWithSwitches(components, connections, switchStates) {
     const graph = {};
     const meta = {};
@@ -839,7 +985,7 @@
   }
 
   function getInternalConductivePairsWithSwitch(component, switchStates) {
-    if (component.id === "led") {
+    if (component.id === "battery") {
       return [];
     }
 
@@ -856,6 +1002,27 @@
     }
 
     return [[component.ports[0].id, component.ports[1].id]];
+  }
+
+  function collectReachableNodes(graph, start) {
+    if (!graph[start]) {
+      return new Set();
+    }
+
+    const visited = new Set([start]);
+    const queue = [start];
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      (graph[current] || []).forEach((next) => {
+        if (!visited.has(next)) {
+          visited.add(next);
+          queue.push(next);
+        }
+      });
+    }
+
+    return visited;
   }
 
   function setFeedback(result) {
@@ -908,6 +1075,7 @@
   }
 
   function removeComponent(instanceId) {
+    invalidateAnalysisState();
     state.placedComponents = state.placedComponents.filter((component) => component.instanceId !== instanceId);
     state.connections = state.connections.filter(
       (connection) => !connection.from.startsWith(instanceId) && !connection.to.startsWith(instanceId)
@@ -916,9 +1084,6 @@
       state.pendingWireStart = null;
     }
     delete state.switchStates[instanceId];
-    if (state.isRunning) {
-      exitRunningState();
-    }
     updateWiringStatus();
     renderPlacedComponents();
     renderConnections();
@@ -1431,16 +1596,73 @@
     return port ? `${instanceId}.${port.label}` : portRef;
   }
 
+  function getComponentParameterDefinitions(componentId) {
+    return COMPONENT_PARAMETER_DEFS[componentId] || [];
+  }
+
+  function createDefaultParameters(componentId) {
+    return getComponentParameterDefinitions(componentId).reduce((result, definition) => {
+      result[definition.key] = definition.defaultValue;
+      return result;
+    }, {});
+  }
+
   function createInstance(componentId, position) {
     const definition = components.find((item) => item.id === componentId);
     state.instanceSeed += 1;
     return {
       ...definition,
       ports: definition.ports.map((port) => ({ ...port })),
+      parameters: createDefaultParameters(componentId),
       instanceId: `${componentId}-${state.instanceSeed}`,
       x: position.x,
       y: position.y
     };
+  }
+
+  function handleParameterInputChange(event) {
+    const input = event.currentTarget;
+    const instanceId = input.dataset.instanceId;
+    const parameterKey = input.dataset.parameterKey;
+    const component = state.placedComponents.find((item) => item.instanceId === instanceId);
+    if (!component) {
+      return;
+    }
+
+    const definition = getComponentParameterDefinitions(component.id).find((item) => item.key === parameterKey);
+    if (!definition) {
+      return;
+    }
+
+    const nextValue = sanitizeParameterValue(input.value, definition);
+    input.value = formatEditableNumber(nextValue);
+    component.parameters = {
+      ...(component.parameters || {}),
+      [parameterKey]: nextValue
+    };
+
+    const shouldResimulate = state.isRunning || state.simulation.hasRun;
+    invalidateAnalysisState();
+    renderPlacedComponents();
+    if (shouldResimulate) {
+      requestSimulation();
+    }
+  }
+
+  function sanitizeParameterValue(rawValue, definition) {
+    const parsed = Number(rawValue);
+    if (!Number.isFinite(parsed)) {
+      return definition.defaultValue;
+    }
+    return clamp(parsed, definition.min, definition.max);
+  }
+
+  function formatEditableNumber(value) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return "";
+    }
+    return numericValue.toString();
   }
 
   function createPortButton(component, port) {
@@ -1470,9 +1692,369 @@
     const index = state.placedComponents.length;
     const start = getStarterPosition(index);
     return {
-      x: clamp(start.x + 20, 20, BOARD_MAX_X),
-      y: clamp(start.y + 20, 20, BOARD_MAX_Y)
+      x: clamp(snapToGrid(start.x + 20), 20, BOARD_MAX_X),
+      y: clamp(snapToGrid(start.y + 20), 20, BOARD_MAX_Y)
     };
+  }
+
+  function snapToGrid(value) {
+    return Math.round(value / GRID_SIZE) * GRID_SIZE;
+  }
+
+  function snapPositionToGrid(x, y) {
+    return {
+      x: snapToGrid(x),
+      y: snapToGrid(y)
+    };
+  }
+
+  function updateGridAlignmentHint(x, y) {
+    let hint = refs.boardSurface.querySelector(".grid-alignment-hint");
+    if (!hint) {
+      hint = document.createElement("div");
+      hint.className = "grid-alignment-hint";
+      refs.boardSurface.appendChild(hint);
+    }
+    hint.style.left = `${x}px`;
+    hint.style.top = `${y}px`;
+    hint.style.display = "block";
+  }
+
+  function hideGridAlignmentHint() {
+    const hint = refs.boardSurface.querySelector(".grid-alignment-hint");
+    if (hint) {
+      hint.style.display = "none";
+    }
+  }
+
+  function bringComponentToFront(instanceId) {
+    const allComponents = refs.boardComponents.querySelectorAll(".board-component");
+    let maxZIndex = 0;
+    
+    allComponents.forEach((el) => {
+      const zIndex = parseInt(window.getComputedStyle(el).zIndex) || 0;
+      if (zIndex > maxZIndex) {
+        maxZIndex = zIndex;
+      }
+    });
+
+    const targetElement = refs.boardComponents.querySelector(`[data-instance-id="${instanceId}"]`);
+    if (targetElement) {
+      targetElement.style.zIndex = maxZIndex + 1;
+    }
+  }
+
+  function checkPortProximity(mousePos) {
+    if (state.dragState) return;
+
+    let nearestPort = null;
+    let nearestDistance = Infinity;
+
+    state.placedComponents.forEach((component) => {
+      component.ports.forEach((port) => {
+        const portRef = `${component.instanceId}:${port.id}`;
+        const anchor = getPortAnchorLogical(portRef);
+        if (!anchor) return;
+
+        const dx = mousePos.x - anchor.center.x;
+        const dy = mousePos.y - anchor.center.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+
+        if (distance < nearestDistance && distance < PORT_SNAP_DISTANCE) {
+          nearestDistance = distance;
+          nearestPort = portRef;
+        }
+      });
+    });
+
+    if (nearestPort && nearestPort !== state.hoveredPort) {
+      const previousHovered = state.hoveredPort;
+      if (previousHovered) {
+        const prevButton = refs.boardComponents.querySelector(
+          `.port-button[data-port-ref="${escapeSelector(previousHovered)}"]`
+        );
+        if (prevButton) {
+          prevButton.classList.remove("is-hovered");
+        }
+      }
+
+      state.hoveredPort = nearestPort;
+      const button = refs.boardComponents.querySelector(
+        `.port-button[data-port-ref="${escapeSelector(nearestPort)}"]`
+      );
+      if (button) {
+        button.classList.add("is-hovered");
+      }
+
+      if (state.pendingWireStart) {
+        requestAnimationFrame(renderWires);
+      }
+    } else if (!nearestPort && state.hoveredPort) {
+      const button = refs.boardComponents.querySelector(
+        `.port-button[data-port-ref="${escapeSelector(state.hoveredPort)}"]`
+      );
+      if (button) {
+        button.classList.remove("is-hovered");
+      }
+      state.hoveredPort = null;
+      
+      if (state.pendingWireStart) {
+        requestAnimationFrame(renderWires);
+      }
+    }
+  }
+
+  function toggleSidebar() {
+    state.sidebarOpen = !state.sidebarOpen;
+    
+    if (refs.toolPanel) {
+      refs.toolPanel.classList.toggle("is-open", state.sidebarOpen);
+    }
+    if (refs.sidebarOverlay) {
+      refs.sidebarOverlay.classList.toggle("is-visible", state.sidebarOpen);
+    }
+  }
+
+  function closeSidebar() {
+    state.sidebarOpen = false;
+    
+    if (refs.toolPanel) {
+      refs.toolPanel.classList.remove("is-open");
+    }
+    if (refs.sidebarOverlay) {
+      refs.sidebarOverlay.classList.remove("is-visible");
+    }
+  }
+
+  function invalidateAnalysisState() {
+    clearSimulationState();
+    if (state.isRunning) {
+      exitRunningState();
+    }
+  }
+
+  function clearSimulationState() {
+    state.simulationRequestSeq += 1;
+    state.simulation = {
+      status: "idle",
+      data: null,
+      error: "",
+      hasRun: false
+    };
+    renderSimulation();
+  }
+
+  async function requestSimulation() {
+    if (!refs.simulationStatus || !refs.simulationSummary) {
+      return;
+    }
+
+    const requestSeq = state.simulationRequestSeq + 1;
+    state.simulationRequestSeq = requestSeq;
+    state.simulation = {
+      status: "loading",
+      data: null,
+      error: "",
+      hasRun: true
+    };
+    renderSimulation();
+
+    try {
+      const response = await fetch("./api/simulate", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          levelId: state.activeLevelId,
+          components: state.placedComponents,
+          connections: state.connections,
+          switchStates: state.switchStates
+        })
+      });
+
+      const result = await response.json();
+      if (requestSeq !== state.simulationRequestSeq) {
+        return;
+      }
+
+      if (!response.ok || !result.ok) {
+        state.simulation = {
+          status: "error",
+          data: null,
+          error: result.error || `仿真请求失败 (${response.status})`,
+          hasRun: true
+        };
+      } else {
+        state.simulation = {
+          status: "ready",
+          data: result,
+          error: "",
+          hasRun: true
+        };
+      }
+      renderSimulation();
+    } catch (error) {
+      if (requestSeq !== state.simulationRequestSeq) {
+        return;
+      }
+
+      state.simulation = {
+        status: "error",
+        data: null,
+        error:
+          "无法连接 Python 仿真服务。请用 .venv 里的 python 运行 dev_server.py，而不是直接双击 index.html。",
+        hasRun: true
+      };
+      renderSimulation();
+    }
+  }
+
+  function renderSimulation() {
+    if (!refs.simulationStatus || !refs.simulationSummary || !refs.simulationMetrics || !refs.waveformTraces) {
+      return;
+    }
+
+    const { status, data, error } = state.simulation;
+
+    if (status === "idle") {
+      refs.simulationStatus.textContent = "未运行";
+      refs.simulationStatus.className = "badge";
+      refs.simulationSummary.textContent =
+        "点击“验证电路”后会调用 Python 仿真器，返回电压、电流和波形结果。";
+      refs.simulationMetrics.innerHTML = "";
+      refs.waveformTraces.innerHTML = "";
+      return;
+    }
+
+    if (status === "loading") {
+      refs.simulationStatus.textContent = "仿真中";
+      refs.simulationStatus.className = "badge is-warning";
+      refs.simulationSummary.textContent = "Python 求解器正在计算当前电路的结点电压和支路电流。";
+      refs.simulationMetrics.innerHTML = "";
+      refs.waveformTraces.innerHTML = "";
+      return;
+    }
+
+    if (status === "error") {
+      refs.simulationStatus.textContent = "失败";
+      refs.simulationStatus.className = "badge is-warning";
+      refs.simulationSummary.textContent = error;
+      refs.simulationMetrics.innerHTML = "";
+      refs.waveformTraces.innerHTML = "";
+      return;
+    }
+
+    refs.simulationStatus.textContent = "已更新";
+    refs.simulationStatus.className = "badge is-success";
+
+    const warningText = data.warnings && data.warnings.length
+      ? ` ${data.warnings.join(" ")}`
+      : "";
+    refs.simulationSummary.textContent = `${data.summary || ""}${warningText}`;
+    refs.simulationMetrics.innerHTML = (data.metrics || [])
+      .map(
+        (metric) => `
+          <div class="simulation-metric">
+            <span>${metric.label}</span>
+            <strong>${formatMetricValue(metric.value, metric.unit)}</strong>
+          </div>
+        `
+      )
+      .join("");
+
+    renderWaveformTraces(data.waveform);
+  }
+
+  function renderWaveformTraces(waveform) {
+    if (!refs.waveformTraces) {
+      return;
+    }
+
+    if (!waveform || !Array.isArray(waveform.series) || waveform.series.length === 0) {
+      refs.waveformTraces.innerHTML = "";
+      return;
+    }
+
+    refs.waveformTraces.innerHTML = waveform.series
+      .map((series) => {
+        const svg = createWaveformSvg(
+          waveform.time || [],
+          series.values || [],
+          series.color || "#d95f23",
+          waveform.eventTime || 0
+        );
+        return `
+          <div class="waveform-trace">
+            <div class="waveform-trace__meta">
+              <strong>${series.label}</strong>
+              <span>${series.unit}</span>
+            </div>
+            ${svg}
+          </div>
+        `;
+      })
+      .join("");
+  }
+
+  function createWaveformSvg(timePoints, values, color, eventTime) {
+    const width = 320;
+    const height = 124;
+    const padLeft = 12;
+    const padRight = 12;
+    const padTop = 10;
+    const padBottom = 18;
+    const innerWidth = width - padLeft - padRight;
+    const innerHeight = height - padTop - padBottom;
+    const safeValues = values.length ? values : [0, 0];
+    const minValue = Math.min(...safeValues);
+    const maxValue = Math.max(...safeValues);
+    const span = Math.abs(maxValue - minValue) < 1e-9 ? 1 : maxValue - minValue;
+    const duration = timePoints.length > 1 ? timePoints[timePoints.length - 1] || 1 : 1;
+
+    const pathData = safeValues
+      .map((value, index) => {
+        const timeValue = timePoints[index] || 0;
+        const x = padLeft + (duration === 0 ? 0 : (timeValue / duration) * innerWidth);
+        const y = padTop + innerHeight - ((value - minValue) / span) * innerHeight;
+        return `${index === 0 ? "M" : "L"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+      })
+      .join(" ");
+
+    const gridY1 = padTop + innerHeight * 0.25;
+    const gridY2 = padTop + innerHeight * 0.5;
+    const gridY3 = padTop + innerHeight * 0.75;
+    const eventX = padLeft + (duration === 0 ? 0 : (eventTime / duration) * innerWidth);
+
+    return `
+      <svg class="waveform-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
+        <line class="grid-line" x1="${padLeft}" y1="${gridY1}" x2="${width - padRight}" y2="${gridY1}"></line>
+        <line class="grid-line" x1="${padLeft}" y1="${gridY2}" x2="${width - padRight}" y2="${gridY2}"></line>
+        <line class="grid-line" x1="${padLeft}" y1="${gridY3}" x2="${width - padRight}" y2="${gridY3}"></line>
+        <line class="event-line" x1="${eventX}" y1="${padTop}" x2="${eventX}" y2="${height - padBottom}"></line>
+        <path class="trace-line" d="${pathData}" style="stroke:${color};"></path>
+        <text class="axis-label" x="${padLeft}" y="${height - 4}">0 ms</text>
+        <text class="axis-label" x="${Math.max(padLeft, eventX - 18)}" y="${padTop + 12}">switch</text>
+        <text class="axis-label" x="${width - padRight - 34}" y="${height - 4}">
+          ${(duration * 1000).toFixed(0)} ms
+        </text>
+      </svg>
+    `;
+  }
+
+  function formatMetricValue(value, unit) {
+    const numericValue = Number(value);
+    if (!Number.isFinite(numericValue)) {
+      return `-- ${unit}`;
+    }
+
+    if (numericValue === 0) {
+      return `0 ${unit}`;
+    }
+
+    const absValue = Math.abs(numericValue);
+    const digits = absValue >= 10 ? 2 : absValue >= 1 ? 3 : 4;
+    return `${numericValue.toFixed(digits)} ${unit}`;
   }
 
   function getComponentSymbol(componentId) {
