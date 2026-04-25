@@ -80,7 +80,8 @@
       error: "",
       hasRun: false
     },
-    simulationRequestSeq: 0
+    simulationRequestSeq: 0,
+    lastSwitchEvent: null
   };
 
   const refs = {
@@ -742,7 +743,13 @@
 
   function toggleSwitch(instanceId) {
     const shouldResimulate = state.isRunning || state.simulation.hasRun;
+    const previousState = state.switchStates[instanceId] === true;
     state.switchStates[instanceId] = !state.switchStates[instanceId];
+    state.lastSwitchEvent = {
+      instanceId,
+      from: previousState,
+      to: state.switchStates[instanceId] === true
+    };
     const indicator = refs.boardComponents.querySelector(
       `.switch-indicator[data-instance-id="${instanceId}"]`
     );
@@ -751,7 +758,7 @@
     }
 
     if (state.isRunning) {
-      calculatePoweredPaths();
+      clearPoweredVisualization();
       renderBoard();
     }
     if (shouldResimulate) {
@@ -922,22 +929,32 @@
     const componentResults = state.simulation.data.operatingPoint.components || [];
     const ignoredComponents = state.simulation.data.operatingPoint.ignoredComponents || [];
     const ignoredSet = new Set(ignoredComponents);
-    const poweredInstanceIds = new Set();
+    const energizedComponents = new Set();
+    const significantCurrent = 0.000001;
 
     componentResults.forEach((result) => {
       if (ignoredSet.has(result.instanceId)) {
         return;
       }
-      if (result.current > 0) {
-        poweredInstanceIds.add(result.instanceId);
+      if (Math.abs(result.current) > significantCurrent) {
+        energizedComponents.add(result.instanceId);
       }
     });
 
-    state.placedComponents.forEach((component) => {
-      if (poweredInstanceIds.has(component.instanceId)) {
-        component.ports.forEach((port) => {
-          state.poweredPorts.add(`${component.instanceId}:${port.id}`);
-        });
+    const graph = buildSimulationConductiveGraph(energizedComponents);
+    const battery = state.placedComponents.find((component) => component.id === "battery");
+    if (!battery) {
+      return;
+    }
+
+    const positivePort = `${battery.instanceId}:positive`;
+    const negativePort = `${battery.instanceId}:negative`;
+    const positiveReachable = collectReachableNodes(graph, positivePort);
+    const negativeReachable = collectReachableNodes(graph, negativePort);
+
+    positiveReachable.forEach((portRef) => {
+      if (negativeReachable.has(portRef)) {
+        state.poweredPorts.add(portRef);
       }
     });
 
@@ -946,6 +963,63 @@
         state.poweredConnections.add(connection.id);
       }
     });
+  }
+
+  function buildSimulationConductiveGraph(energizedComponents) {
+    const graph = {};
+
+    state.placedComponents.forEach((component) => {
+      component.ports.forEach((port) => {
+        graph[`${component.instanceId}:${port.id}`] = graph[`${component.instanceId}:${port.id}`] || new Set();
+      });
+    });
+
+    state.connections.forEach((connection) => {
+      connectGraphNodes(graph, connection.from, connection.to);
+    });
+
+    state.placedComponents.forEach((component) => {
+      const ports = component.ports || [];
+      if (ports.length < 2) {
+        return;
+      }
+
+      const firstPort = `${component.instanceId}:${ports[0].id}`;
+      const secondPort = `${component.instanceId}:${ports[1].id}`;
+
+      if (component.id === "wire") {
+        connectGraphNodes(graph, firstPort, secondPort);
+        return;
+      }
+
+      if (component.id === "battery") {
+        return;
+      }
+
+      if (component.id === "switch") {
+        if (state.switchStates[component.instanceId] === true) {
+          connectGraphNodes(graph, firstPort, secondPort);
+        }
+        return;
+      }
+
+      if (energizedComponents.has(component.instanceId)) {
+        connectGraphNodes(graph, firstPort, secondPort);
+      }
+    });
+    return graph;
+  }
+
+  function connectGraphNodes(graph, from, to) {
+    graph[from] = graph[from] || new Set();
+    graph[to] = graph[to] || new Set();
+    graph[from].add(to);
+    graph[to].add(from);
+  }
+
+  function clearPoweredVisualization() {
+    state.poweredPorts = new Set();
+    state.poweredConnections = new Set();
   }
   function buildGraphWithSwitches(components, connections, switchStates) {
     const graph = {};
@@ -1835,6 +1909,7 @@
 
   function clearSimulationState() {
     state.simulationRequestSeq += 1;
+    state.lastSwitchEvent = null;
     state.simulation = {
       status: "idle",
       data: null,
@@ -1869,7 +1944,8 @@
           levelId: state.activeLevelId,
           components: state.placedComponents,
           connections: state.connections,
-          switchStates: state.switchStates
+          switchStates: state.switchStates,
+          switchEvent: state.lastSwitchEvent
         })
       });
 
@@ -1885,6 +1961,10 @@
           error: result.error || `仿真请求失败 (${response.status})`,
           hasRun: true
         };
+        if (state.isRunning) {
+          clearPoweredVisualization();
+          renderBoard();
+        }
       } else {
         state.simulation = {
           status: "ready",
@@ -1892,6 +1972,11 @@
           error: "",
           hasRun: true
         };
+        state.lastSwitchEvent = null;
+        if (state.isRunning) {
+          calculatePoweredPathsFromSimulation();
+          renderBoard();
+        }
       }
       renderSimulation();
     } catch (error) {
@@ -1906,6 +1991,10 @@
           "无法连接 Python 仿真服务。请用 .venv 里的 python 运行 dev_server.py，而不是直接双击 index.html。",
         hasRun: true
       };
+      if (state.isRunning) {
+        clearPoweredVisualization();
+        renderBoard();
+      }
       renderSimulation();
     }
   }
@@ -2024,17 +2113,18 @@
     const gridY1 = padTop + innerHeight * 0.25;
     const gridY2 = padTop + innerHeight * 0.5;
     const gridY3 = padTop + innerHeight * 0.75;
-    const eventX = padLeft + (duration === 0 ? 0 : (eventTime / duration) * innerWidth);
+    const hasEvent = Number.isFinite(eventTime);
+    const eventX = hasEvent ? padLeft + (duration === 0 ? 0 : (eventTime / duration) * innerWidth) : null;
 
     return `
       <svg class="waveform-svg" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" aria-hidden="true">
         <line class="grid-line" x1="${padLeft}" y1="${gridY1}" x2="${width - padRight}" y2="${gridY1}"></line>
         <line class="grid-line" x1="${padLeft}" y1="${gridY2}" x2="${width - padRight}" y2="${gridY2}"></line>
         <line class="grid-line" x1="${padLeft}" y1="${gridY3}" x2="${width - padRight}" y2="${gridY3}"></line>
-        <line class="event-line" x1="${eventX}" y1="${padTop}" x2="${eventX}" y2="${height - padBottom}"></line>
+        ${hasEvent ? `<line class="event-line" x1="${eventX}" y1="${padTop}" x2="${eventX}" y2="${height - padBottom}"></line>` : ""}
         <path class="trace-line" d="${pathData}" style="stroke:${color};"></path>
         <text class="axis-label" x="${padLeft}" y="${height - 4}">0 ms</text>
-        <text class="axis-label" x="${Math.max(padLeft, eventX - 18)}" y="${padTop + 12}">switch</text>
+        ${hasEvent ? `<text class="axis-label" x="${Math.max(padLeft, eventX - 18)}" y="${padTop + 12}">switch</text>` : ""}
         <text class="axis-label" x="${width - padRight - 34}" y="${height - 4}">
           ${(duration * 1000).toFixed(0)} ms
         </text>

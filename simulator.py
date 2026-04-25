@@ -10,6 +10,9 @@ DEFAULT_BATTERY_VOLTAGE = 5.0
 DEFAULT_SAMPLE_COUNT = 121
 DEFAULT_DURATION = 0.12
 DEFAULT_EVENT_TIME = 0.04
+LED_OFF_RESISTANCE = 1e9
+LED_TURN_ON_EPSILON = 1e-6
+LED_MAX_ITERATIONS = 8
 
 DEFAULT_COMPONENT_PARAMETERS = {
     "battery": {"voltage": 5.0},
@@ -23,7 +26,16 @@ DEFAULT_COMPONENT_PARAMETERS = {
     "fuse": {"resistance": 0.2},
 }
 
-PROBE_ORDER = ("led", "lamp", "resistor", "motor", "fan", "buzzer", "capacitor", "fuse")
+PROBE_ORDER = (
+    "led",
+    "lamp",
+    "resistor",
+    "motor",
+    "fan",
+    "buzzer",
+    "capacitor",
+    "fuse",
+)
 
 
 @dataclass
@@ -64,108 +76,72 @@ def simulate_circuit(payload: dict[str, Any]) -> dict[str, Any]:
     components = payload.get("components") or []
     connections = payload.get("connections") or []
     final_switch_states = payload.get("switchStates") or {}
+    switch_event = payload.get("switchEvent")
 
     batteries = [component for component in components if component.get("id") == "battery"]
     if not batteries:
         return {
             "ok": False,
-            "error": "缺少电池，Python 仿真器无法建立电源边界条件。",
+            "error": "A battery is required before simulation can run.",
         }
 
-    final_result = solve_snapshot(
-        components, connections, final_switch_states, 1.0, {}
-    )
+    final_result = solve_snapshot(components, connections, final_switch_states, 1.0, {})
     if not final_result["ok"]:
         return final_result
 
-    all_switches = [component for component in components if component.get("id") == "switch"]
     initial_switch_states = dict(final_switch_states)
-    source_scale_before = 0.0
-    source_scale_after = 1.0
+    event_time = None
 
-    if len(all_switches) == 1:
-        switch = all_switches[0]
-        instance_id = switch.get("instanceId")
-        initial_switch_states[instance_id] = not bool(final_switch_states.get(instance_id, True))
-        source_scale_before = 1.0
+    if is_valid_switch_event(switch_event, final_switch_states):
+        instance_id = switch_event["instanceId"]
+        initial_switch_states[instance_id] = bool(switch_event["from"])
+        event_time = DEFAULT_EVENT_TIME
 
-    samples = []
-    capacitor_voltages: dict[str, float] = {}
     dt = DEFAULT_DURATION / max(DEFAULT_SAMPLE_COUNT - 1, 1)
+    capacitor_voltages: dict[str, float] = {}
+    samples = []
 
     for sample_index in range(DEFAULT_SAMPLE_COUNT):
-        ratio = sample_index / (DEFAULT_SAMPLE_COUNT - 1)
+        ratio = sample_index / max(DEFAULT_SAMPLE_COUNT - 1, 1)
         time_value = round(DEFAULT_DURATION * ratio, 6)
-        before_event = time_value < DEFAULT_EVENT_TIME
-        switch_state = initial_switch_states if before_event else final_switch_states
-        source_scale = source_scale_before if before_event else source_scale_after
-
-        snapshot = solve_snapshot(
-            components, connections, switch_state, source_scale,
-            capacitor_voltages, dt
+        switch_state = (
+            initial_switch_states
+            if event_time is not None and time_value < event_time
+            else final_switch_states
         )
 
+        snapshot = solve_snapshot(
+            components,
+            connections,
+            switch_state,
+            1.0,
+            capacitor_voltages,
+            dt,
+        )
         if not snapshot["ok"]:
             return snapshot
 
         capacitor_voltages = snapshot.get("capacitorVoltages", {})
-
+        summary_values = snapshot["summaryValues"]
         samples.append(
             {
                 "time": time_value,
-                "supplyVoltage": snapshot["summaryValues"]["supplyVoltage"],
-                "supplyCurrent": snapshot["summaryValues"]["supplyCurrent"],
-                "probeVoltage": snapshot["summaryValues"]["probeVoltage"],
-                "probeCurrent": snapshot["summaryValues"]["probeCurrent"],
+                "supplyVoltage": summary_values["supplyVoltage"],
+                "supplyCurrent": summary_values["supplyCurrent"],
+                "probeVoltage": summary_values["probeVoltage"],
+                "probeCurrent": summary_values["probeCurrent"],
             }
         )
 
-    waveform_series = [
-        {
-            "key": "supplyVoltage",
-            "label": "电源电压",
-            "unit": "V",
-            "color": "#d95f23",
-            "values": [sample["supplyVoltage"] for sample in samples],
-        },
-        {
-            "key": "supplyCurrent",
-            "label": "总电流",
-            "unit": "A",
-            "color": "#235d52",
-            "values": [sample["supplyCurrent"] for sample in samples],
-        },
-    ]
-
-    probe_label = final_result["probe"]["name"] if final_result["probe"] else "主负载"
-    waveform_series.extend(
-        [
-            {
-                "key": "probeVoltage",
-                "label": f"{probe_label} 电压",
-                "unit": "V",
-                "color": "#0d7b52",
-                "values": [sample["probeVoltage"] for sample in samples],
-            },
-            {
-                "key": "probeCurrent",
-                "label": f"{probe_label} 电流",
-                "unit": "A",
-                "color": "#7c3aed",
-                "values": [sample["probeCurrent"] for sample in samples],
-            },
-        ]
-    )
-
+    probe_label = final_result["probe"]["name"] if final_result["probe"] else "Primary load"
     summary_lines = [
-        "Python 结点分析已完成。",
-        "波形展示的是当前开关状态对应的一次切换响应。",
+        "Python operating-point simulation completed.",
+        "Waveforms reflect the current switch state and the latest real switch toggle when available.",
     ]
     if final_result["ignoredComponents"]:
-        summary_lines.append(f"忽略了 {len(final_result['ignoredComponents'])} 个未接入电源回路的元件。")
-
-    if final_result.get("warnings"):
-        summary_lines.extend(final_result["warnings"])
+        summary_lines.append(
+            f"Ignored {len(final_result['ignoredComponents'])} component(s) outside the powered network."
+        )
 
     return {
         "ok": True,
@@ -175,8 +151,37 @@ def simulate_circuit(payload: dict[str, Any]) -> dict[str, Any]:
         "metrics": build_metrics(final_result),
         "waveform": {
             "time": [sample["time"] for sample in samples],
-            "series": waveform_series,
-            "eventTime": DEFAULT_EVENT_TIME,
+            "series": [
+                {
+                    "key": "supplyVoltage",
+                    "label": "Supply voltage",
+                    "unit": "V",
+                    "color": "#d95f23",
+                    "values": [sample["supplyVoltage"] for sample in samples],
+                },
+                {
+                    "key": "supplyCurrent",
+                    "label": "Supply current",
+                    "unit": "A",
+                    "color": "#235d52",
+                    "values": [sample["supplyCurrent"] for sample in samples],
+                },
+                {
+                    "key": "probeVoltage",
+                    "label": f"{probe_label} voltage",
+                    "unit": "V",
+                    "color": "#0d7b52",
+                    "values": [sample["probeVoltage"] for sample in samples],
+                },
+                {
+                    "key": "probeCurrent",
+                    "label": f"{probe_label} current",
+                    "unit": "A",
+                    "color": "#7c3aed",
+                    "values": [sample["probeCurrent"] for sample in samples],
+                },
+            ],
+            "eventTime": event_time,
             "duration": DEFAULT_DURATION,
         },
         "probe": final_result["probe"],
@@ -193,7 +198,7 @@ def solve_snapshot(
     switch_states: dict[str, bool],
     source_scale: float,
     capacitor_voltages: dict[str, float],
-    dt: float = None,
+    dt: float | None = None,
 ) -> dict[str, Any]:
     if dt is None:
         dt = DEFAULT_DURATION / max(DEFAULT_SAMPLE_COUNT - 1, 1)
@@ -211,7 +216,7 @@ def solve_snapshot(
     if not active_nodes:
         return {
             "ok": False,
-            "error": "当前电路没有接入可求解的电源回路。",
+            "error": "No active powered circuit could be solved.",
         }
 
     active_elements = [
@@ -219,7 +224,6 @@ def solve_snapshot(
         for element in elements
         if element.node_a in active_nodes and element.node_b in active_nodes
     ]
-
     ignored_components = sorted(
         {
             element.instance_id
@@ -232,95 +236,135 @@ def solve_snapshot(
     if not sources:
         return {
             "ok": False,
-            "error": "没有检测到可用于仿真的电压源。",
+            "error": "No usable voltage source was found for simulation.",
         }
 
     ground_node = sources[0].node_b
     node_names = sorted(node for node in active_nodes if node != ground_node)
     node_index = {node_name: index for index, node_name in enumerate(node_names)}
-    source_index = {
-        element.instance_id: index for index, element in enumerate(sources)
-    }
+    source_index = {element.instance_id: index for index, element in enumerate(sources)}
 
     matrix_size = len(node_names) + len(sources)
     if matrix_size == 0:
         return {
             "ok": False,
-            "error": "当前电路没有可求解变量。",
+            "error": "The circuit has no solvable variables.",
         }
 
-    matrix = [[0.0 for _ in range(matrix_size)] for _ in range(matrix_size)]
-    rhs = [0.0 for _ in range(matrix_size)]
+    new_capacitor_voltages = dict(capacitor_voltages)
+    warnings: list[str] = []
+    led_states = {
+        element.instance_id: False
+        for element in active_elements
+        if element.kind == "led"
+    }
+    node_voltages: dict[str, float] = {}
+    source_currents: dict[str, float] = {}
+
+    for _ in range(LED_MAX_ITERATIONS):
+        matrix = [[0.0 for _ in range(matrix_size)] for _ in range(matrix_size)]
+        rhs = [0.0 for _ in range(matrix_size)]
+
+        for element in active_elements:
+            if element.kind == "resistor":
+                stamp_resistor(
+                    matrix,
+                    node_index,
+                    ground_node,
+                    element.node_a,
+                    element.node_b,
+                    element.value,
+                )
+            elif element.kind == "led":
+                if led_states.get(element.instance_id):
+                    stamp_led_on(
+                        matrix,
+                        rhs,
+                        node_index,
+                        ground_node,
+                        element.node_a,
+                        element.node_b,
+                        element.value,
+                        element.forward_voltage,
+                    )
+                else:
+                    stamp_resistor(
+                        matrix,
+                        node_index,
+                        ground_node,
+                        element.node_a,
+                        element.node_b,
+                        LED_OFF_RESISTANCE,
+                    )
+            elif element.kind == "capacitor":
+                if source_scale <= 0:
+                    continue
+
+                capacitance = max(element.value, 1e-6)
+                conductance = capacitance / dt
+                previous_voltage = capacitor_voltages.get(element.instance_id, 0.0)
+
+                stamp_resistor(
+                    matrix,
+                    node_index,
+                    ground_node,
+                    element.node_a,
+                    element.node_b,
+                    1.0 / conductance,
+                )
+                stamp_current_source(
+                    rhs,
+                    node_index,
+                    ground_node,
+                    element.node_a,
+                    element.node_b,
+                    -conductance * previous_voltage,
+                )
+            elif element.kind == "vsource":
+                stamp_voltage_source(
+                    matrix,
+                    rhs,
+                    node_index,
+                    source_index,
+                    ground_node,
+                    element,
+                )
+
+        try:
+            solution = solve_linear_system(matrix, rhs)
+        except ValueError as error:
+            return {
+                "ok": False,
+                "error": str(error),
+            }
+
+        node_voltages = {
+            node_name: solution[node_offset]
+            for node_name, node_offset in node_index.items()
+        }
+        node_voltages[ground_node] = 0.0
+        source_currents = {
+            source.instance_id: solution[len(node_names) + source_index[source.instance_id]]
+            for source in sources
+        }
+
+        updated_led_states: dict[str, bool] = {}
+        for element in active_elements:
+            if element.kind != "led":
+                continue
+            branch_voltage = (
+                node_voltages.get(element.node_a, 0.0)
+                - node_voltages.get(element.node_b, 0.0)
+            )
+            updated_led_states[element.instance_id] = (
+                branch_voltage > element.forward_voltage + LED_TURN_ON_EPSILON
+            )
+
+        if updated_led_states == led_states:
+            break
+        led_states = updated_led_states
 
     component_results = []
-    warnings = []
-    new_capacitor_voltages = dict(capacitor_voltages)
-
-    for element in active_elements:
-        if element.kind == "resistor":
-            stamp_resistor(matrix, node_index, ground_node, element.node_a, element.node_b, element.value)
-        elif element.kind == "led":
-            led_series_resistance = element.value
-            if led_series_resistance <= 0:
-                led_series_resistance = 1.0
-
-            effective_resistance = led_series_resistance
-            stamp_resistor(
-                matrix, node_index, ground_node,
-                element.node_a, element.node_b, effective_resistance
-            )
-        elif element.kind == "capacitor":
-            if source_scale <= 0:
-                continue
-
-            capacitance = element.value
-            if capacitance <= 0:
-                capacitance = 1e-6
-
-            conductance = capacitance / dt
-            previous_voltage = capacitor_voltages.get(element.instance_id, 0.0)
-
-            stamp_resistor(
-                matrix, node_index, ground_node,
-                element.node_a, element.node_b, 1.0 / conductance
-            )
-            stamp_current_source(
-                rhs,
-                node_index,
-                ground_node,
-                element.node_a,
-                element.node_b,
-                -conductance * previous_voltage,
-            )
-        elif element.kind == "vsource":
-            stamp_voltage_source(
-                matrix,
-                rhs,
-                node_index,
-                source_index,
-                ground_node,
-                element,
-            )
-
-    try:
-        solution = solve_linear_system(matrix, rhs)
-    except ValueError as error:
-        return {
-            "ok": False,
-            "error": str(error),
-        }
-
-    node_voltages = {
-        node_name: solution[node_offset]
-        for node_name, node_offset in node_index.items()
-    }
-    node_voltages[ground_node] = 0.0
-
-    source_currents = {
-        element.instance_id: solution[len(node_names) + source_offset]
-        for element, source_offset in ((source, source_index[source.instance_id]) for source in sources)
-    }
-
     for element in active_elements:
         voltage = node_voltages.get(element.node_a, 0.0) - node_voltages.get(element.node_b, 0.0)
         current = 0.0
@@ -330,42 +374,22 @@ def solve_snapshot(
             current = voltage / element.value
             power = voltage * current
         elif element.kind == "led":
-            forward_voltage = element.forward_voltage
-            series_resistance = element.value
-            if series_resistance <= 0:
-                series_resistance = 1.0
-
-            actual_current = 0.0
-            effective_voltage = 0.0
-
-            if voltage > forward_voltage:
-                actual_current = (voltage - forward_voltage) / series_resistance
-                effective_voltage = forward_voltage
-            elif voltage < -forward_voltage:
-                actual_current = 0.0
-                effective_voltage = 0.0
-                warnings.append(f"{element.name} 反向偏置，电流截止。")
+            if led_states.get(element.instance_id):
+                series_resistance = max(element.value, 1.0)
+                current = max((voltage - element.forward_voltage) / series_resistance, 0.0)
+                power = voltage * current
             else:
-                actual_current = 0.0
-                effective_voltage = 0.0
-
-            current = actual_current
-            power = effective_voltage * actual_current
-            voltage = effective_voltage
-
+                current = voltage / LED_OFF_RESISTANCE
+                power = voltage * current
+                if voltage < -LED_TURN_ON_EPSILON:
+                    warnings.append(f"{element.name} is reverse-biased and effectively off.")
         elif element.kind == "capacitor":
             capacitance = element.value
             if capacitance > 0 and dt > 0:
-                prev_v = capacitor_voltages.get(element.instance_id, 0.0)
-                new_v = voltage
-                current = capacitance * (new_v - prev_v) / dt
+                previous_voltage = capacitor_voltages.get(element.instance_id, 0.0)
+                current = capacitance * (voltage - previous_voltage) / dt
                 power = voltage * current
-
-                new_capacitor_voltages[element.instance_id] = new_v
-            else:
-                current = 0.0
-                power = 0.0
-
+                new_capacitor_voltages[element.instance_id] = voltage
         elif element.kind == "vsource":
             current = source_currents.get(element.instance_id, 0.0)
             power = voltage * current
@@ -384,68 +408,7 @@ def solve_snapshot(
             }
         )
 
-    led_elements = [e for e in active_elements if e.kind == "led"]
-    if led_elements:
-        led_info = {}
-        conducting_leds = []
-        for led in led_elements:
-            led_voltage = abs(node_voltages.get(led.node_a, 0.0) - node_voltages.get(led.node_b, 0.0))
-            is_forward = led_voltage > led.forward_voltage
-            led_info[led.instance_id] = {
-                "voltage": led_voltage,
-                "forward_voltage": led.forward_voltage,
-                "series_resistance": led.value,
-                "is_forward": is_forward,
-            }
-            if is_forward:
-                conducting_leds.append(led.instance_id)
-
-        if conducting_leds:
-            total_forward_voltage = sum(
-                led_info[led_id]["forward_voltage"] for led_id in conducting_leds
-            )
-
-            total_resistance = 0.0
-            for element in active_elements:
-                if element.kind == "resistor":
-                    total_resistance += element.value
-                elif element.kind == "led" and element.instance_id in conducting_leds:
-                    total_resistance += element.value
-
-            first_source = sources[0]
-            supply_voltage = abs(
-                node_voltages.get(first_source.node_a, 0.0) - node_voltages.get(first_source.node_b, 0.0)
-            )
-
-            if total_resistance > 0:
-                correct_current = (supply_voltage - total_forward_voltage) / total_resistance
-
-                for result in component_results:
-                    element = next((e for e in active_elements if e.instance_id == result["instanceId"]), None)
-                    if not element:
-                        continue
-
-                    if element.kind == "vsource":
-                        result["current"] = round(abs(correct_current), 6)
-                        result["power"] = round(abs(result["voltage"] * correct_current), 6)
-                    elif element.kind == "resistor":
-                        resistance = element.value
-                        result["current"] = round(abs(correct_current), 6)
-                        result["voltage"] = round(abs(correct_current * resistance), 6)
-                        result["power"] = round(abs(result["voltage"] * correct_current), 6)
-                    elif element.kind == "led":
-                        if element.instance_id in conducting_leds:
-                            result["current"] = round(abs(correct_current), 6)
-                            result["voltage"] = round(abs(led_info[element.instance_id]["forward_voltage"]), 6)
-                            result["power"] = round(abs(result["voltage"] * correct_current), 6)
-                        else:
-                            result["current"] = 0.0
-                            result["voltage"] = 0.0
-                            result["power"] = 0.0
     probe = pick_probe(component_results)
-    supply_voltage = 0.0
-    supply_current = 0.0
-
     first_source = sources[0]
     supply_voltage = abs(
         node_voltages.get(first_source.node_a, 0.0) - node_voltages.get(first_source.node_b, 0.0)
@@ -466,6 +429,29 @@ def solve_snapshot(
             "probeCurrent": round(probe["current"], 6) if probe else 0.0,
         },
     }
+
+
+def is_valid_switch_event(
+    switch_event: dict[str, Any] | None,
+    final_switch_states: dict[str, bool],
+) -> bool:
+    if not isinstance(switch_event, dict):
+        return False
+
+    instance_id = switch_event.get("instanceId")
+    before_state = switch_event.get("from")
+    after_state = switch_event.get("to")
+
+    if not isinstance(instance_id, str):
+        return False
+    if not isinstance(before_state, bool) or not isinstance(after_state, bool):
+        return False
+    if before_state == after_state:
+        return False
+    if instance_id not in final_switch_states:
+        return False
+
+    return bool(final_switch_states.get(instance_id)) == after_state
 
 
 def collapse_nodes(
@@ -541,27 +527,25 @@ def build_elements(
             elements.append(
                 Element(
                     kind="vsource",
-                    value=get_component_parameter(component, "voltage", DEFAULT_BATTERY_VOLTAGE) * source_scale,
-                    forward_voltage=0.0,
+                    value=get_component_parameter(component, "voltage", DEFAULT_BATTERY_VOLTAGE)
+                    * source_scale,
                     **common_kwargs,
                 )
             )
         elif component_id == "led":
-            resistance = get_component_parameter(
-                component,
-                "resistance",
-                DEFAULT_COMPONENT_PARAMETERS["led"]["resistance"],
-            )
-            forward_voltage = get_component_parameter(
-                component,
-                "forwardVoltage",
-                DEFAULT_COMPONENT_PARAMETERS["led"]["forwardVoltage"],
-            )
             elements.append(
                 Element(
                     kind="led",
-                    value=resistance,
-                    forward_voltage=forward_voltage,
+                    value=get_component_parameter(
+                        component,
+                        "resistance",
+                        DEFAULT_COMPONENT_PARAMETERS["led"]["resistance"],
+                    ),
+                    forward_voltage=get_component_parameter(
+                        component,
+                        "forwardVoltage",
+                        DEFAULT_COMPONENT_PARAMETERS["led"]["forwardVoltage"],
+                    ),
                     **common_kwargs,
                 )
             )
@@ -574,7 +558,6 @@ def build_elements(
                         "resistance",
                         DEFAULT_COMPONENT_PARAMETERS.get(component_id, {}).get("resistance", 100.0),
                     ),
-                    forward_voltage=0.0,
                     **common_kwargs,
                 )
             )
@@ -587,7 +570,6 @@ def build_elements(
                         "capacitance",
                         DEFAULT_COMPONENT_PARAMETERS["capacitor"]["capacitance"],
                     ),
-                    forward_voltage=0.0,
                     **common_kwargs,
                 )
             )
@@ -626,7 +608,7 @@ def stamp_resistor(
     resistance: float,
 ) -> None:
     if resistance <= 0:
-        raise ValueError("检测到非法电阻值。")
+        raise ValueError("Invalid resistance value.")
 
     conductance = 1.0 / resistance
     slot_a = node_slot(node_index, ground_node, node_a)
@@ -639,6 +621,29 @@ def stamp_resistor(
     if slot_a is not None and slot_b is not None:
         matrix[slot_a][slot_b] -= conductance
         matrix[slot_b][slot_a] -= conductance
+
+
+def stamp_led_on(
+    matrix: list[list[float]],
+    rhs: list[float],
+    node_index: dict[str, int],
+    ground_node: str,
+    node_a: str,
+    node_b: str,
+    series_resistance: float,
+    forward_voltage: float,
+) -> None:
+    resistance = max(series_resistance, 1.0)
+    stamp_resistor(matrix, node_index, ground_node, node_a, node_b, resistance)
+    conductance = 1.0 / resistance
+    stamp_current_source(
+        rhs,
+        node_index,
+        ground_node,
+        node_b,
+        node_a,
+        conductance * max(forward_voltage, 0.0),
+    )
 
 
 def stamp_current_source(
@@ -680,12 +685,18 @@ def solve_linear_system(matrix: list[list[float]], rhs: list[float]) -> list[flo
     augmented = [row[:] + [rhs[index]] for index, row in enumerate(matrix)]
 
     for pivot_index in range(size):
-        pivot_row = max(range(pivot_index, size), key=lambda row_index: abs(augmented[row_index][pivot_index]))
+        pivot_row = max(
+            range(pivot_index, size),
+            key=lambda row_index: abs(augmented[row_index][pivot_index]),
+        )
         if abs(augmented[pivot_row][pivot_index]) < 1e-10:
-            raise ValueError("电路无法求解，存在悬空节点或理想电源短路。")
+            raise ValueError("Circuit solution failed because the matrix is singular.")
 
         if pivot_row != pivot_index:
-            augmented[pivot_index], augmented[pivot_row] = augmented[pivot_row], augmented[pivot_index]
+            augmented[pivot_index], augmented[pivot_row] = (
+                augmented[pivot_row],
+                augmented[pivot_index],
+            )
 
         pivot_value = augmented[pivot_index][pivot_index]
         for column_index in range(pivot_index, size + 1):
@@ -698,7 +709,9 @@ def solve_linear_system(matrix: list[list[float]], rhs: list[float]) -> list[flo
             if abs(factor) < 1e-12:
                 continue
             for column_index in range(pivot_index, size + 1):
-                augmented[row_index][column_index] -= factor * augmented[pivot_index][column_index]
+                augmented[row_index][column_index] -= (
+                    factor * augmented[pivot_index][column_index]
+                )
 
     return [augmented[row_index][size] for row_index in range(size)]
 
@@ -716,17 +729,17 @@ def pick_probe(component_results: list[dict[str, Any]]) -> dict[str, Any] | None
 
 def build_metrics(result: dict[str, Any]) -> list[dict[str, Any]]:
     metrics = [
-        {"label": "电源电压", "value": result["summaryValues"]["supplyVoltage"], "unit": "V"},
-        {"label": "总电流", "value": result["summaryValues"]["supplyCurrent"], "unit": "A"},
+        {"label": "Supply voltage", "value": result["summaryValues"]["supplyVoltage"], "unit": "V"},
+        {"label": "Supply current", "value": result["summaryValues"]["supplyCurrent"], "unit": "A"},
     ]
 
     probe = result.get("probe")
     if probe:
         metrics.extend(
             [
-                {"label": f"{probe['name']} 电压", "value": probe["voltage"], "unit": "V"},
-                {"label": f"{probe['name']} 电流", "value": probe["current"], "unit": "A"},
-                {"label": f"{probe['name']} 功耗", "value": probe["power"], "unit": "W"},
+                {"label": f"{probe['name']} voltage", "value": probe["voltage"], "unit": "V"},
+                {"label": f"{probe['name']} current", "value": probe["current"], "unit": "A"},
+                {"label": f"{probe['name']} power", "value": probe["power"], "unit": "W"},
             ]
         )
 
