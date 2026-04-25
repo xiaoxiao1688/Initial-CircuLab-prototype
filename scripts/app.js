@@ -911,6 +911,42 @@
     });
   }
 
+  function calculatePoweredPathsFromSimulation() {
+    state.poweredPorts = new Set();
+    state.poweredConnections = new Set();
+
+    if (!state.simulation.data || !state.simulation.data.operatingPoint) {
+      return;
+    }
+
+    const componentResults = state.simulation.data.operatingPoint.components || [];
+    const ignoredComponents = state.simulation.data.operatingPoint.ignoredComponents || [];
+    const ignoredSet = new Set(ignoredComponents);
+    const poweredInstanceIds = new Set();
+
+    componentResults.forEach((result) => {
+      if (ignoredSet.has(result.instanceId)) {
+        return;
+      }
+      if (result.current > 0) {
+        poweredInstanceIds.add(result.instanceId);
+      }
+    });
+
+    state.placedComponents.forEach((component) => {
+      if (poweredInstanceIds.has(component.instanceId)) {
+        component.ports.forEach((port) => {
+          state.poweredPorts.add(`${component.instanceId}:${port.id}`);
+        });
+      }
+    });
+
+    state.connections.forEach((connection) => {
+      if (state.poweredPorts.has(connection.from) && state.poweredPorts.has(connection.to)) {
+        state.poweredConnections.add(connection.id);
+      }
+    });
+  }
   function buildGraphWithSwitches(components, connections, switchStates) {
     const graph = {};
     const meta = {};

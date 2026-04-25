@@ -83,10 +83,10 @@ def simulate_circuit(payload: dict[str, Any]) -> dict[str, Any]:
     source_scale_before = 0.0
     source_scale_after = 1.0
 
-    if all_switches:
-        for switch in all_switches:
-            instance_id = switch.get("instanceId")
-            initial_switch_states[instance_id] = not bool(final_switch_states.get(instance_id, True))
+    if len(all_switches) == 1:
+        switch = all_switches[0]
+        instance_id = switch.get("instanceId")
+        initial_switch_states[instance_id] = not bool(final_switch_states.get(instance_id, True))
         source_scale_before = 1.0
 
     samples = []
@@ -384,6 +384,64 @@ def solve_snapshot(
             }
         )
 
+    led_elements = [e for e in active_elements if e.kind == "led"]
+    if led_elements:
+        led_info = {}
+        conducting_leds = []
+        for led in led_elements:
+            led_voltage = abs(node_voltages.get(led.node_a, 0.0) - node_voltages.get(led.node_b, 0.0))
+            is_forward = led_voltage > led.forward_voltage
+            led_info[led.instance_id] = {
+                "voltage": led_voltage,
+                "forward_voltage": led.forward_voltage,
+                "series_resistance": led.value,
+                "is_forward": is_forward,
+            }
+            if is_forward:
+                conducting_leds.append(led.instance_id)
+
+        if conducting_leds:
+            total_forward_voltage = sum(
+                led_info[led_id]["forward_voltage"] for led_id in conducting_leds
+            )
+
+            total_resistance = 0.0
+            for element in active_elements:
+                if element.kind == "resistor":
+                    total_resistance += element.value
+                elif element.kind == "led" and element.instance_id in conducting_leds:
+                    total_resistance += element.value
+
+            first_source = sources[0]
+            supply_voltage = abs(
+                node_voltages.get(first_source.node_a, 0.0) - node_voltages.get(first_source.node_b, 0.0)
+            )
+
+            if total_resistance > 0:
+                correct_current = (supply_voltage - total_forward_voltage) / total_resistance
+
+                for result in component_results:
+                    element = next((e for e in active_elements if e.instance_id == result["instanceId"]), None)
+                    if not element:
+                        continue
+
+                    if element.kind == "vsource":
+                        result["current"] = round(abs(correct_current), 6)
+                        result["power"] = round(abs(result["voltage"] * correct_current), 6)
+                    elif element.kind == "resistor":
+                        resistance = element.value
+                        result["current"] = round(abs(correct_current), 6)
+                        result["voltage"] = round(abs(correct_current * resistance), 6)
+                        result["power"] = round(abs(result["voltage"] * correct_current), 6)
+                    elif element.kind == "led":
+                        if element.instance_id in conducting_leds:
+                            result["current"] = round(abs(correct_current), 6)
+                            result["voltage"] = round(abs(led_info[element.instance_id]["forward_voltage"]), 6)
+                            result["power"] = round(abs(result["voltage"] * correct_current), 6)
+                        else:
+                            result["current"] = 0.0
+                            result["voltage"] = 0.0
+                            result["power"] = 0.0
     probe = pick_probe(component_results)
     supply_voltage = 0.0
     supply_current = 0.0
