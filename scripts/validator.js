@@ -130,6 +130,134 @@
     return false;
   }
 
+  function findPath(graph, from, to, blockedNodes = new Set()) {
+    if (!graph[from] || !graph[to] || blockedNodes.has(from) || blockedNodes.has(to)) {
+      return null;
+    }
+
+    const queue = [[from]];
+    const visited = new Set([from]);
+
+    while (queue.length > 0) {
+      const path = queue.shift();
+      const current = path[path.length - 1];
+
+      if (current === to) {
+        return path;
+      }
+
+      graph[current].forEach((next) => {
+        if (!visited.has(next) && !blockedNodes.has(next)) {
+          visited.add(next);
+          queue.push([...path, next]);
+        }
+      });
+    }
+
+    return null;
+  }
+
+  function getNodeInstance(portRef) {
+    if (!portRef) return null;
+    const parts = portRef.split(":");
+    return parts[0];
+  }
+
+  function getNodePort(portRef) {
+    if (!portRef) return null;
+    const parts = portRef.split(":");
+    return parts[1];
+  }
+
+  function analyzePathComponents(path) {
+    if (!path || path.length < 2) {
+      return { components: [], ports: [] };
+    }
+
+    const components = new Set();
+    const ports = new Set();
+
+    path.forEach((portRef) => {
+      const instanceId = getNodeInstance(portRef);
+      const portId = getNodePort(portRef);
+      if (instanceId) {
+        components.add(instanceId);
+      }
+      if (portRef) {
+        ports.add(portRef);
+      }
+    });
+
+    return {
+      components: Array.from(components),
+      ports: Array.from(ports)
+    };
+  }
+
+  function findPathThroughResistor(graph, batteryPositive, ledAnode, resistorA, resistorB) {
+    const path1 = findPath(graph, batteryPositive, resistorA);
+    if (path1) {
+      const path2 = findPath(graph, resistorB, ledAnode);
+      if (path2) {
+        return {
+          success: true,
+          direction: "A-to-B",
+          pathToResistor: path1,
+          pathFromResistor: path2,
+          fullPath: [...path1, ...path2.slice(1)]
+        };
+      }
+    }
+
+    const path3 = findPath(graph, batteryPositive, resistorB);
+    if (path3) {
+      const path4 = findPath(graph, resistorA, ledAnode);
+      if (path4) {
+        return {
+          success: true,
+          direction: "B-to-A",
+          pathToResistor: path3,
+          pathFromResistor: path4,
+          fullPath: [...path3, ...path4.slice(1)]
+        };
+      }
+    }
+
+    return { success: false };
+  }
+
+  function findDirectPathWithoutResistor(graph, batteryPositive, ledAnode, resistorA, resistorB) {
+    const blockedNodes = new Set([resistorA, resistorB]);
+    return findPath(graph, batteryPositive, ledAnode, blockedNodes);
+  }
+
+  function identifyProblematicConnections(connections, graph, batteryPositive, ledAnode, resistorA, resistorB) {
+    const problematic = {
+      missingFromPositiveToResistor: [],
+      missingFromResistorToLed: [],
+      missingFromLedToNegative: [],
+      bypassConnections: []
+    };
+
+    const blockedNodes = new Set([resistorA, resistorB]);
+
+    connections.forEach((connection) => {
+      const from = connection.from;
+      const to = connection.to;
+
+      const fromOnPositiveSide = hasPath(graph, batteryPositive, from, blockedNodes);
+      const toOnPositiveSide = hasPath(graph, batteryPositive, to, blockedNodes);
+      const fromOnLedSide = hasPath(graph, from, ledAnode, blockedNodes);
+      const toOnLedSide = hasPath(graph, to, ledAnode, blockedNodes);
+
+      if ((fromOnPositiveSide && toOnLedSide) || (toOnPositiveSide && fromOnLedSide)) {
+        problematic.bypassConnections.push(connection.id);
+      }
+    });
+
+    return problematic;
+  }
+
   function resolvePort(instanceId, portId) {
     return `${instanceId}:${portId}`;
   }
@@ -373,137 +501,149 @@
     const resistorB = resolvePort(resistor.instanceId, "b");
     const blockedNodes = new Set([resistorA, resistorB]);
 
-    const posToResistorA = hasPath(graph, batteryPositive, resistorA);
-    const posToResistorB = hasPath(graph, batteryPositive, resistorB);
-    const resistorAToLed = hasPath(graph, resistorA, ledAnode);
-    const resistorBToLed = hasPath(graph, resistorB, ledAnode);
-
     const resistorAConnected = graph[resistorA] && graph[resistorA].size > 0;
     const resistorBConnected = graph[resistorB] && graph[resistorB].size > 0;
     const ledAnodeConnected = graph[ledAnode] && graph[ledAnode].size > 0;
+    const ledCathodeConnected = graph[ledCathode] && graph[ledCathode].size > 0;
 
-    const throughResistor =
-      (posToResistorA && resistorBToLed) ||
-      (posToResistorB && resistorAToLed);
+    const correctPathResult = findPathThroughResistor(graph, batteryPositive, ledAnode, resistorA, resistorB);
+    const bypassPath = findDirectPathWithoutResistor(graph, batteryPositive, ledAnode, resistorA, resistorB);
 
-    const positiveToResistor = posToResistorA || posToResistorB;
-    const resistorToLed = resistorAToLed || resistorBToLed;
+    const throughResistor = correctPathResult.success;
+    const bypassResistor = bypassPath !== null;
 
     const ledBack = hasPath(graph, ledCathode, batteryNegative);
-    const bypassResistor = hasPath(graph, batteryPositive, ledAnode, blockedNodes);
-
-    const resistorIsolated = !positiveToResistor && !resistorToLed;
-    const resistorPartial = positiveToResistor && !resistorToLed;
-    const resistorAfterLed = resistorToLed && !positiveToResistor;
-
     const ledConnected = hasPath(graph, batteryPositive, ledAnode);
 
+    const problematic = identifyProblematicConnections(
+      connections, graph, batteryPositive, ledAnode, resistorA, resistorB
+    );
+
     if (throughResistor) {
-      addFinding(state, "电阻已经正确串入主路径：电池正极 → 电阻 → LED 正端。");
-    } else if (resistorIsolated) {
+      const pathInfo = correctPathResult.direction === "A-to-B"
+        ? "电流路径：电池正极 → 电阻 A 端 → 电阻 B 端 → LED 正端"
+        : "电流路径：电池正极 → 电阻 B 端 → 电阻 A 端 → LED 正端";
+      addFinding(state, "电阻已经正确串入主路径：" + pathInfo);
+    } else {
+      const pathToA = findPath(graph, batteryPositive, resistorA);
+      const pathToB = findPath(graph, batteryPositive, resistorB);
+      const pathFromAToLed = findPath(graph, resistorA, ledAnode);
+      const pathFromBToLed = findPath(graph, resistorB, ledAnode);
+
       if (!resistorAConnected && !resistorBConnected) {
-        addIssue(state, "电阻的两个端口都没有任何连线，完全游离在电路之外。请将电池正极连接到电阻的某一端，再将电阻的另一端连接到 LED 正端。", {
+        addIssue(state, "电阻完全游离：两个端口都没有任何连线。正确的连接方式是：电池正极 → 电阻一端（A 或 B）→ 电阻另一端（B 或 A）→ LED 正端。", {
           instances: [resistor.instanceId],
           ports: [resistorA, resistorB]
         });
       } else if (resistorAConnected && !resistorBConnected) {
-        addIssue(state, "电阻 A 端有连线，但 B 端完全没有连线。请确保电阻的两个端口都正确接入主路径：电池正极 → 电阻一端 → 电阻另一端 → LED 正端。", {
-          instances: [resistor.instanceId],
-          ports: [resistorB]
-        });
+        if (pathToA) {
+          addIssue(state, "电池正极能到电阻 A 端，但电阻 B 端完全没有连线。电流只能进入电阻，无法流出到 LED。请将电阻 B 端连接到 LED 正端。", {
+            instances: [resistor.instanceId, led.instanceId],
+            ports: [resistorB, ledAnode]
+          });
+        } else if (pathFromAToLed) {
+          addIssue(state, "电阻 A 端能到 LED 正端，但电池正极到不了电阻的任何一端，而且电阻 B 端没有连线。电阻被放在了错误的位置。正确顺序：电池正极 → 电阻 → LED 正端 → LED 负端 → 电池负极。", {
+            instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+            ports: [batteryPositive, resistorB, ledAnode]
+          });
+        } else {
+          addIssue(state, "电阻 A 端有连线但不在主路径上，电阻 B 端完全没有连线。电阻没有真正接入电路。", {
+            instances: [resistor.instanceId],
+            ports: [resistorA, resistorB]
+          });
+        }
       } else if (!resistorAConnected && resistorBConnected) {
-        addIssue(state, "电阻 B 端有连线，但 A 端完全没有连线。请确保电阻的两个端口都正确接入主路径：电池正极 → 电阻一端 → 电阻另一端 → LED 正端。", {
-          instances: [resistor.instanceId],
-          ports: [resistorA]
-        });
-      } else {
-        addIssue(state, "电阻的两个端口都有连线，但都不在主路径上：电池正极既到不了电阻的任何一端，电阻也到不了 LED 正端。请检查电阻的连接方向。", {
-          instances: [resistor.instanceId],
-          ports: [resistorA, resistorB]
-        });
-      }
-    } else if (resistorPartial) {
-      if (posToResistorA && !resistorBToLed) {
-        if (!resistorBConnected) {
-          addIssue(state, "电池正极已经能到电阻 A 端，但电阻 B 端完全没有连线。请将电阻 B 端连接到 LED 正端。", {
-            instances: [resistor.instanceId, led.instanceId],
-            ports: [resistorB, ledAnode]
-          });
-        } else {
-          addIssue(state, "电池正极已经能到电阻 A 端，但电阻 B 端到不了 LED 正端。电阻只串了一半。请检查电阻 B 端到 LED 正端之间的连接。", {
-            instances: [resistor.instanceId, led.instanceId],
-            ports: [resistorB, ledAnode]
-          });
-        }
-      } else if (posToResistorB && !resistorAToLed) {
-        if (!resistorAConnected) {
-          addIssue(state, "电池正极已经能到电阻 B 端，但电阻 A 端完全没有连线。请将电阻 A 端连接到 LED 正端。", {
+        if (pathToB) {
+          addIssue(state, "电池正极能到电阻 B 端，但电阻 A 端完全没有连线。电流只能进入电阻，无法流出到 LED。请将电阻 A 端连接到 LED 正端。", {
             instances: [resistor.instanceId, led.instanceId],
             ports: [resistorA, ledAnode]
           });
+        } else if (pathFromBToLed) {
+          addIssue(state, "电阻 B 端能到 LED 正端，但电池正极到不了电阻的任何一端，而且电阻 A 端没有连线。电阻被放在了错误的位置。正确顺序：电池正极 → 电阻 → LED 正端 → LED 负端 → 电池负极。", {
+            instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+            ports: [batteryPositive, resistorA, ledAnode]
+          });
         } else {
-          addIssue(state, "电池正极已经能到电阻 B 端，但电阻 A 端到不了 LED 正端。电阻只串了一半。请检查电阻 A 端到 LED 正端之间的连接。", {
-            instances: [resistor.instanceId, led.instanceId],
-            ports: [resistorA, ledAnode]
+          addIssue(state, "电阻 B 端有连线但不在主路径上，电阻 A 端完全没有连线。电阻没有真正接入电路。", {
+            instances: [resistor.instanceId],
+            ports: [resistorA, resistorB]
           });
         }
-      }
-    } else if (resistorAfterLed) {
-      if (resistorAToLed && !posToResistorA && !posToResistorB) {
-        addIssue(state, "电阻 A 端能到 LED 正端，但电池正极到不了电阻的任何一端。这通常意味着：要么电阻被错误地放在了 LED 之后（LED 负端 → 电阻 → 电池负极），要么电阻根本没接到电源侧。正确的顺序应该是：电池正极 → 电阻 → LED 正端 → LED 负端 → 电池负极。", {
-          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
-          ports: [batteryPositive, resistorA, resistorB, ledAnode]
-        });
-      } else if (resistorBToLed && !posToResistorA && !posToResistorB) {
-        addIssue(state, "电阻 B 端能到 LED 正端，但电池正极到不了电阻的任何一端。这通常意味着：要么电阻被错误地放在了 LED 之后（LED 负端 → 电阻 → 电池负极），要么电阻根本没接到电源侧。正确的顺序应该是：电池正极 → 电阻 → LED 正端 → LED 负端 → 电池负极。", {
-          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
-          ports: [batteryPositive, resistorA, resistorB, ledAnode]
-        });
-      }
-    } else if (!positiveToResistor) {
-      if (!resistorAConnected && !resistorBConnected) {
-        addIssue(state, "电池正极还没有连接到电阻的任何一端，而且电阻的两个端口都没有连线。请先将电池正极连接到电阻的某一端（A 端或 B 端）。", {
-          instances: [battery.instanceId, resistor.instanceId],
-          ports: [batteryPositive, resistorA, resistorB]
-        });
       } else {
-        addIssue(state, "电池正极还没有连接到电阻的任何一端。虽然电阻有连线，但电流无法从电池正极到达电阻。请确保电池正极 → 电阻 → LED 正端的顺序。", {
-          instances: [battery.instanceId, resistor.instanceId],
-          ports: [batteryPositive, resistorA, resistorB]
-        });
+        if (pathToA && !pathFromBToLed) {
+          const bPath = findPath(graph, resistorB, ledAnode);
+          if (!bPath) {
+            addIssue(state, "电池正极能到电阻 A 端，但电阻 B 端到不了 LED 正端。电阻只串了一半，电流无法从电阻流向 LED。请检查电阻 B 端到 LED 正端之间的连接。", {
+              instances: [resistor.instanceId, led.instanceId],
+              ports: [resistorB, ledAnode]
+            });
+          }
+        } else if (pathToB && !pathFromAToLed) {
+          const aPath = findPath(graph, resistorA, ledAnode);
+          if (!aPath) {
+            addIssue(state, "电池正极能到电阻 B 端，但电阻 A 端到不了 LED 正端。电阻只串了一半，电流无法从电阻流向 LED。请检查电阻 A 端到 LED 正端之间的连接。", {
+              instances: [resistor.instanceId, led.instanceId],
+              ports: [resistorA, ledAnode]
+            });
+          }
+        } else if (!pathToA && !pathToB) {
+          if (pathFromAToLed || pathFromBToLed) {
+            addIssue(state, "电阻能到 LED 正端，但电池正极到不了电阻的任何一端。这意味着电阻被错误地放在了 LED 之后（LED 负端 → 电阻 → 电池负极），或者根本没接到电源侧。正确的顺序应该是：电池正极 → 电阻 → LED 正端 → LED 负端 → 电池负极。", {
+              instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+              ports: [batteryPositive, resistorA, resistorB, ledAnode]
+            });
+          } else {
+            addIssue(state, "电阻的两个端口都有连线，但都不在主路径上：电池正极既到不了电阻的任何一端，电阻也到不了 LED 正端。请检查电阻的连接方向。", {
+              instances: [resistor.instanceId],
+              ports: [resistorA, resistorB]
+            });
+          }
+        }
       }
-    } else if (positiveToResistor) {
-      addFinding(state, "电池正极已经先接到电阻。");
+    }
+
+    if (!ledAnodeConnected) {
+      addIssue(state, "LED 正端还没有任何连线。LED 需要两个端口都正确连接：正端接电池正极侧（经过电阻），负端接电池负极侧。", {
+        instances: [led.instanceId],
+        ports: [ledAnode]
+      });
     }
 
     if (ledBack) {
       addFinding(state, "LED 负端已经回到电池负极，回路下半部分是完整的。");
     } else {
-      const cathodeConnected = graph[ledCathode] && graph[ledCathode].size > 0;
-      if (!cathodeConnected) {
-        addIssue(state, "LED 负端还没有任何连线。请将 LED 负端连接到电池负极以完成回路。", {
+      if (!ledCathodeConnected) {
+        addIssue(state, "LED 负端完全没有连线。请将 LED 负端连接到电池负极以完成回路。", {
           instances: [led.instanceId, battery.instanceId],
           ports: [ledCathode, batteryNegative]
         });
       } else {
         const cathodeNeighbors = graph[ledCathode];
-        let canReachNegativeFromAnyNeighbor = false;
+        let neighborOnNegativeSide = false;
         cathodeNeighbors.forEach((neighbor) => {
           if (hasPath(graph, neighbor, batteryNegative)) {
-            canReachNegativeFromAnyNeighbor = true;
+            neighborOnNegativeSide = true;
           }
         });
 
-        if (canReachNegativeFromAnyNeighbor) {
-          addIssue(state, "LED 负端有连线，而且邻居节点能到电池负极，但 LED 负端本身的路径有问题。请检查 LED 负端的连接。", {
+        if (neighborOnNegativeSide) {
+          addIssue(state, "LED 负端有连线，而且邻居节点能到电池负极，但 LED 负端本身的路径有问题。请检查 LED 负端的连接是否正确。", {
             instances: [led.instanceId],
             ports: [ledCathode]
           });
         } else {
-          addIssue(state, "LED 负端已经有连线，但连接的路径到不了电池负极。请检查 LED 负端 → 电池负极之间的所有连接。", {
-            instances: [led.instanceId, battery.instanceId],
-            ports: [ledCathode, batteryNegative]
-          });
+          const pathFromCathode = findPath(graph, ledCathode, batteryPositive);
+          if (pathFromCathode) {
+            addIssue(state, "LED 负端的连线连到了电池正极侧！这是错误的。LED 负端应该连接到电池负极侧。", {
+              instances: [led.instanceId, battery.instanceId],
+              ports: [ledCathode, batteryNegative]
+            });
+          } else {
+            addIssue(state, "LED 负端有连线，但路径到不了电池负极。请检查 LED 负端 → 电池负极之间的所有连接。", {
+              instances: [led.instanceId, battery.instanceId],
+              ports: [ledCathode, batteryNegative]
+            });
+          }
         }
       }
     }
@@ -511,11 +651,12 @@
     if (!bypassResistor && throughResistor) {
       addFinding(state, "没有发现绕过电阻直达 LED 的旁路，电阻真正承担了保护作用。");
     } else if (bypassResistor) {
-      const bypassConnections = findBypassConnectionsPrecise(connections, graph, batteryPositive, ledAnode, blockedNodes);
+      const bypassConnections = problematic.bypassConnections;
 
       if (ledConnected && !throughResistor) {
         if (bypassConnections.length > 0) {
-          addIssue(state, "检测到电池正极可以绕过电阻直接到达 LED 正端！有 " + bypassConnections.length + " 条导线形成了旁路。当前 LED 已经能被点亮，但电阻被完全跳过了，没有起到保护作用。请删除或修改这些旁路导线。", {
+          const bypassPathAnalysis = analyzePathComponents(bypassPath);
+          addIssue(state, "检测到电池正极可以绕过电阻直接到达 LED 正端！有 " + bypassConnections.length + " 条导线形成了旁路。当前 LED 已经能被点亮，但电阻被完全跳过了，没有起到保护作用。从仿真角度看：电流会选择电阻更小的路径，所以如果有一条导线直接连接电池正极侧和 LED 正端侧，电流就会绕过电阻。请删除或修改这些旁路导线。", {
             instances: [battery.instanceId, resistor.instanceId, led.instanceId],
             ports: [batteryPositive, ledAnode]
           });
@@ -527,7 +668,7 @@
         }
       } else if (ledConnected && throughResistor) {
         if (bypassConnections.length > 0) {
-          addIssue(state, "检测到存在绕过电阻的旁路导线！虽然电阻已经正确串入主路径，但同时有 " + bypassConnections.length + " 条导线直接连接了电池正极侧和 LED 正端侧，形成了不经过电阻的旁路。这会让电阻失去保护意义，因为电流会选择电阻更小的路径。请删除这些旁路导线。", {
+          addIssue(state, "检测到存在绕过电阻的旁路导线！虽然电阻已经正确串入主路径，但同时有 " + bypassConnections.length + " 条导线直接连接了电池正极侧和 LED 正端侧，形成了不经过电阻的旁路。这会让电阻失去保护意义：根据并联电路原理，电流会选择电阻更小的路径（导线的电阻几乎为 0），所以大部分电流会绕过电阻。请删除这些旁路导线。", {
             instances: [battery.instanceId, resistor.instanceId, led.instanceId],
             ports: [batteryPositive, ledAnode]
           });
@@ -546,13 +687,6 @@
 
       bypassConnections.forEach((connId) => {
         state.errorConnections.add(connId);
-      });
-    }
-
-    if (!ledAnodeConnected && !ledBack) {
-      addIssue(state, "LED 正端还没有任何连线。LED 需要两个端口都正确连接才能工作：正端接电池正极侧（经过电阻），负端接电池负极侧。", {
-        instances: [led.instanceId],
-        ports: [ledAnode]
       });
     }
 
