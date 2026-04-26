@@ -417,6 +417,7 @@
   }
 
   function bootstrapLevel(level) {
+    const levelScaffold = getLevelScaffold(level);
     state.instanceSeed = 0;
     state.pendingWireStart = null;
     state.dragState = null;
@@ -435,12 +436,17 @@
     refs.levelDescription.textContent = level.description;
     refs.activeLevelTitle.textContent = level.title;
     refs.levelGoals.innerHTML = level.goals.map((goal) => `<li>${goal}</li>`).join("");
+    refs.feedbackSummary.textContent = levelScaffold.startPrompt;
     refs.feedbackSummary.textContent = "先在实验台摆好元件并连线，再点击“验证电路”。";
-    refs.feedbackPass.innerHTML = "";
-    refs.feedbackFail.innerHTML = "";
+    refs.feedbackPass.innerHTML = "<li>验证通过后，这里会显示已经完成的条件。</li>";
+    refs.feedbackFail.innerHTML = levelScaffold.checkpoints.length
+      ? levelScaffold.checkpoints.map((item) => `<li>${item}</li>`).join("")
+      : '<li>开始吧，做这道题目，然后点击“验证电路”。</li>';
     refs.feedbackBadge.textContent = "待验证";
+    refs.feedbackBadge.textContent = "待开始";
     refs.feedbackBadge.className = "badge";
     clearSimulationState();
+    refs.feedbackSummary.textContent = levelScaffold.startPrompt;
     
     refs.boardCanvas.classList.remove("is-running");
     if (refs.boardToolbar) {
@@ -452,6 +458,17 @@
     renderPlacedComponents();
     renderConnections();
     renderBoard();
+  }
+
+  function getLevelScaffold(level) {
+    if (window.CircuitValidator && typeof window.CircuitValidator.getLevelScaffold === "function") {
+      return window.CircuitValidator.getLevelScaffold(level);
+    }
+
+    return {
+      startPrompt: "开始吧，做这道题目。先在实验台摆好元件并连线，再点击“验证电路”。",
+      checkpoints: []
+    };
   }
 
   function renderPalette(level) {
@@ -1124,6 +1141,33 @@
     });
     refs.wireLayer.querySelectorAll(".wire-line.is-error").forEach((el) => {
       el.classList.remove("is-error");
+    });
+
+    (result.errorInstances || []).forEach((instanceId) => {
+      const instanceEl = refs.boardComponents.querySelector(
+        `[data-instance-id="${escapeSelector(instanceId)}"]`
+      );
+      if (instanceEl) {
+        instanceEl.classList.add("is-error");
+      }
+    });
+
+    (result.errorPorts || []).forEach((portRef) => {
+      const portEl = refs.boardComponents.querySelector(
+        `.port-button[data-port-ref="${escapeSelector(portRef)}"]`
+      );
+      if (portEl) {
+        portEl.classList.add("is-error");
+      }
+    });
+
+    (result.errorConnections || []).forEach((connectionId) => {
+      const wireEl = refs.wireLayer.querySelector(
+        `.wire-line[data-connection-id="${escapeSelector(connectionId)}"]`
+      );
+      if (wireEl) {
+        wireEl.classList.add("is-error");
+      }
     });
 
     if (!result.passed) {
