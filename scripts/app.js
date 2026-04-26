@@ -437,16 +437,13 @@
     refs.activeLevelTitle.textContent = level.title;
     refs.levelGoals.innerHTML = level.goals.map((goal) => `<li>${goal}</li>`).join("");
     refs.feedbackSummary.textContent = levelScaffold.startPrompt;
-    refs.feedbackSummary.textContent = "先在实验台摆好元件并连线，再点击“验证电路”。";
     refs.feedbackPass.innerHTML = "<li>验证通过后，这里会显示已经完成的条件。</li>";
     refs.feedbackFail.innerHTML = levelScaffold.checkpoints.length
       ? levelScaffold.checkpoints.map((item) => `<li>${item}</li>`).join("")
       : '<li>开始吧，做这道题目，然后点击“验证电路”。</li>';
-    refs.feedbackBadge.textContent = "待验证";
     refs.feedbackBadge.textContent = "待开始";
     refs.feedbackBadge.className = "badge";
     clearSimulationState();
-    refs.feedbackSummary.textContent = levelScaffold.startPrompt;
     
     refs.boardCanvas.classList.remove("is-running");
     if (refs.boardToolbar) {
