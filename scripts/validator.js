@@ -30,12 +30,12 @@
       ]
     },
     "resistor-protects-led": {
-      startPrompt: "开始吧，做这道题目。先让电池正极接到电阻，再从电阻接到 LED 正端，最后把 LED 负端接回电池负极。",
+      startPrompt: "开始吧，做这道题目。目标是把电阻正确串入 LED 主回路：电池正极 → 电阻某一端 → 电阻另一端 → LED 正端 → LED 负端 → 电池负极。",
       checkpoints: [
-        "主路径顺序要像这样：电池正极 -> 电阻 -> LED 正端。",
-        "LED 负端必须回到电池负极。",
-        "不能存在绕过电阻直接到 LED 的旁路。",
-        "第 4 关开始已经预留了可扩展验证骨架，后面可以继续加更细的教学规则。"
+        "电池正极能先到达电阻的某一端（A 端或 B 端）。",
+        "电阻的另一端能到达 LED 正端（电阻必须被电流完整经过，不能只接一端）。",
+        "LED 负端最终能回到电池负极，完成下半回路。",
+        "不存在绕过电阻的旁路：如果电池正极侧和 LED 正端侧之间有不经过电阻的导线，电阻就失去保护意义了。"
       ]
     }
   };
@@ -373,63 +373,134 @@
     const resistorB = resolvePort(resistor.instanceId, "b");
     const blockedNodes = new Set([resistorA, resistorB]);
 
-    const positiveToResistor =
-      hasPath(graph, batteryPositive, resistorA) ||
-      hasPath(graph, batteryPositive, resistorB);
-    const resistorToLed =
-      hasPath(graph, resistorA, ledAnode) ||
-      hasPath(graph, resistorB, ledAnode);
+    const posToResistorA = hasPath(graph, batteryPositive, resistorA);
+    const posToResistorB = hasPath(graph, batteryPositive, resistorB);
+    const resistorAToLed = hasPath(graph, resistorA, ledAnode);
+    const resistorBToLed = hasPath(graph, resistorB, ledAnode);
+
+    const throughResistor =
+      (posToResistorA && resistorBToLed) ||
+      (posToResistorB && resistorAToLed);
+
+    const positiveToResistor = posToResistorA || posToResistorB;
+    const resistorToLed = resistorAToLed || resistorBToLed;
+
     const ledBack = hasPath(graph, ledCathode, batteryNegative);
     const bypassResistor = hasPath(graph, batteryPositive, ledAnode, blockedNodes);
 
-    if (positiveToResistor) {
+    const resistorIsolated = !positiveToResistor && !resistorToLed;
+    const resistorPartial = positiveToResistor && !resistorToLed;
+    const resistorAfterLed = resistorToLed && !positiveToResistor;
+
+    const ledPathWithoutResistor = hasPath(graph, batteryPositive, ledAnode, blockedNodes);
+    const ledConnected = hasPath(graph, batteryPositive, ledAnode);
+
+    if (throughResistor) {
+      addFinding(state, "电阻已经正确串入主路径：电池正极 → 电阻 → LED 正端。");
+    } else if (resistorIsolated) {
+      addIssue(state, "电阻完全游离在主路径之外：电池正极既到不了电阻的任何一端，电阻也到不了 LED 正端。", {
+        instances: [resistor.instanceId],
+        ports: [resistorA, resistorB]
+      });
+    } else if (resistorPartial) {
+      if (posToResistorA) {
+        addIssue(state, "电池正极已经接到电阻 A 端，但电阻 B 端还没有连接到 LED 正端。电阻只串了一半。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, resistorA, resistorB, ledAnode]
+        });
+      } else {
+        addIssue(state, "电池正极已经接到电阻 B 端，但电阻 A 端还没有连接到 LED 正端。电阻只串了一半。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, resistorB, resistorA, ledAnode]
+        });
+      }
+    } else if (resistorAfterLed) {
+      if (resistorAToLed) {
+        addIssue(state, "电阻 A 端能到 LED 正端，但电池正极到不了电阻的任何一端。电阻可能被放在了 LED 之后，或者根本没接到电源侧。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, resistorA, resistorB, ledAnode]
+        });
+      } else {
+        addIssue(state, "电阻 B 端能到 LED 正端，但电池正极到不了电阻的任何一端。电阻可能被放在了 LED 之后，或者根本没接到电源侧。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, resistorB, resistorA, ledAnode]
+        });
+      }
+    } else if (positiveToResistor) {
       addFinding(state, "电池正极已经先接到电阻。");
     } else {
-      addIssue(state, "电池正极还没有先连接到电阻。", {
+      addIssue(state, "电池正极还没有先连接到电阻的任何一端。", {
         instances: [battery.instanceId, resistor.instanceId],
         ports: [batteryPositive, resistorA, resistorB]
       });
     }
 
-    if (resistorToLed) {
-      addFinding(state, "电阻已经串到 LED 正端之前。");
-    } else {
-      addIssue(state, "还没有形成从电阻到 LED 正端的主路径。", {
-        instances: [resistor.instanceId, led.instanceId],
-        ports: [resistorA, resistorB, ledAnode]
-      });
-    }
-
     if (ledBack) {
-      addFinding(state, "LED 负端已经回到电池负极。");
+      addFinding(state, "LED 负端已经回到电池负极，回路下半部分是完整的。");
     } else {
-      addIssue(state, "LED 负端还没有回到电池负极。", {
-        instances: [battery.instanceId, led.instanceId],
-        ports: [ledCathode, batteryNegative]
-      });
+      const cathodeConnected = graph[ledCathode] && graph[ledCathode].size > 0;
+      if (cathodeConnected) {
+        addIssue(state, "LED 负端已经有连线，但没有正确回到电池负极。请检查 LED 负端之后的路径是否能最终到达电池负极。", {
+          instances: [battery.instanceId, led.instanceId],
+          ports: [ledCathode, batteryNegative]
+        });
+      } else {
+        addIssue(state, "LED 负端还没有任何连线。请将 LED 负端接回电池负极以完成回路。", {
+          instances: [led.instanceId],
+          ports: [ledCathode]
+        });
+      }
     }
 
-    if (!bypassResistor && positiveToResistor && resistorToLed) {
-      addFinding(state, "没有发现绕过电阻直达 LED 的旁路。");
+    if (!bypassResistor && throughResistor) {
+      addFinding(state, "没有发现绕过电阻直达 LED 的旁路，电阻真正承担了保护作用。");
     } else if (bypassResistor) {
-      addIssue(state, "检测到正极可以绕过电阻直接到 LED，电阻没有真正串入主回路。", {
-        instances: [battery.instanceId, resistor.instanceId, led.instanceId],
-        ports: [batteryPositive, ledAnode]
-      });
+      if (ledConnected && !throughResistor) {
+        addIssue(state, "检测到电池正极可以绕过电阻直接到达 LED 正端！当前 LED 已经能被点亮，但电阻被完全跳过了，没有起到保护作用。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, ledAnode]
+        });
+      } else if (ledConnected && throughResistor) {
+        addIssue(state, "检测到存在绕过电阻的旁路导线！虽然电阻已经串入路径，但同时存在一条不经过电阻的导线直接连接电池正极侧和 LED 正端侧，这会让电阻失去保护意义。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, ledAnode]
+        });
+      } else {
+        addIssue(state, "检测到正极可以绕过电阻直接到 LED，电阻没有真正串入主回路。", {
+          instances: [battery.instanceId, resistor.instanceId, led.instanceId],
+          ports: [batteryPositive, ledAnode]
+        });
+      }
 
-      connections.forEach((connection) => {
-        const touchesLedAnode =
-          connection.from === ledAnode ||
-          connection.to === ledAnode;
-        const touchesBatteryPositive =
-          connection.from === batteryPositive ||
-          connection.to === batteryPositive;
-
-        if (touchesLedAnode || touchesBatteryPositive) {
-          state.errorConnections.add(connection.id);
-        }
+      const bypassConnections = findBypassConnections(connections, graph, batteryPositive, ledAnode, blockedNodes);
+      bypassConnections.forEach((connId) => {
+        state.errorConnections.add(connId);
       });
     }
+
+    if (throughResistor && ledBack && !bypassResistor) {
+      addFinding(state, "电阻已经正确串入 LED 主回路，形成了完整的保护结构。");
+    }
+  }
+
+  function findBypassConnections(connections, graph, batteryPositive, ledAnode, blockedNodes) {
+    const bypassConnIds = [];
+
+    connections.forEach((connection) => {
+      const from = connection.from;
+      const to = connection.to;
+
+      const fromOnPositiveSide = hasPath(graph, batteryPositive, from, blockedNodes);
+      const toOnPositiveSide = hasPath(graph, batteryPositive, to, blockedNodes);
+      const fromOnLedSide = hasPath(graph, from, ledAnode, blockedNodes);
+      const toOnLedSide = hasPath(graph, to, ledAnode, blockedNodes);
+
+      if ((fromOnPositiveSide && toOnLedSide) || (toOnPositiveSide && fromOnLedSide)) {
+        bypassConnIds.push(connection.id);
+      }
+    });
+
+    return bypassConnIds;
   }
 
   function getDisplayName(componentId) {
