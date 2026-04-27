@@ -509,33 +509,66 @@
     const resistorBConnected = (graph[resistorB] || new Set()).size > 0;
     const ledCathodeConnected = (graph[ledCathode] || new Set()).size > 0;
 
+    const resistorPortA = `${resistor.instanceId}:a`;
+    const resistorPortB = `${resistor.instanceId}:b`;
+    const batteryPosPort = `${battery.instanceId}:positive`;
+    const ledAnodePort = `${led.instanceId}:anode`;
+    const ledCathodePort = `${led.instanceId}:cathode`;
+    const batteryNegPort = `${battery.instanceId}:negative`;
+
     if (throughResistorPath) {
       addFinding(state, "电阻已经正确串入 LED 主路径。");
     } else if (!resistorAConnected && !resistorBConnected) {
       addIssue(
         state,
-        "电阻完全没有接入电路，两端都还是悬空的。请把电阻两端都接入主回路。",
-        markersFromPorts([resistorA, resistorB], connections)
+        `电阻完全没有接入电路，${resistorPortA} 和 ${resistorPortB} 两端都还是悬空的。正确连接方式：电池正极（${batteryPosPort}）→ 电阻一端 → 电阻另一端 → LED 正端（${ledAnodePort}）。`,
+        markersFromPorts([resistorA, resistorB, batteryPositive, ledAnode], connections)
       );
     } else if (!resistorAConnected || !resistorBConnected) {
       const disconnectedPort = !resistorAConnected ? resistorA : resistorB;
-      addIssue(
-        state,
-        "电阻只接入了一端，电流无法完整经过电阻再流向 LED。请把悬空的那端也接入电路。",
-        markersFromPorts([resistorA, resistorB, disconnectedPort], connections)
-      );
+      const disconnectedPortLabel = !resistorAConnected ? resistorPortA : resistorPortB;
+      const connectedPort = resistorAConnected ? resistorA : resistorB;
+      const connectedPortLabel = resistorAConnected ? resistorPortA : resistorPortB;
+
+      const connectedToPositive = positiveToA || positiveToB;
+      const connectedToLed = aToLed || bToLed;
+
+      if (connectedToPositive && !connectedToLed) {
+        addIssue(
+          state,
+          `电阻 ${connectedPortLabel} 已连接到电池正极，但 ${disconnectedPortLabel} 还悬空。请把电阻 ${disconnectedPortLabel} 连接到 LED 正端（${ledAnodePort}）。`,
+          markersFromPorts([disconnectedPort, ledAnode], connections)
+        );
+      } else if (connectedToLed && !connectedToPositive) {
+        addIssue(
+          state,
+          `电阻 ${connectedPortLabel} 已连接到 LED 正端，但 ${disconnectedPortLabel} 还悬空。请把电阻 ${disconnectedPortLabel} 连接到电池正极（${batteryPosPort}）。`,
+          markersFromPorts([disconnectedPort, batteryPositive], connections)
+        );
+      } else {
+        addIssue(
+          state,
+          `电阻只接入了一端（${connectedPortLabel}），${disconnectedPortLabel} 还悬空。电流无法完整经过电阻再流向 LED。请把悬空的那端也接入主回路。`,
+          markersFromPorts([resistorA, resistorB, disconnectedPort], connections)
+        );
+      }
     } else if (!positiveToA && !positiveToB) {
       addIssue(
         state,
-        "电池正极还没有连接到电阻的任何一端。主路径应该是：电池正极 → 电阻 → LED 正端。",
+        `电池正极（${batteryPosPort}）还没有连接到电阻的任何一端。应该用导线把 ${batteryPosPort} 连接到 ${resistorPortA} 或 ${resistorPortB}。`,
         markersFromPorts([batteryPositive, resistorA, resistorB], connections)
       );
     } else if (!aToLed && !bToLed) {
       const resistorToLedPath = findPath(graph, resistorA, ledAnode) || findPath(graph, resistorB, ledAnode);
+      const positiveConnectedPort = positiveToA ? resistorA : resistorB;
+      const positiveConnectedPortLabel = positiveToA ? resistorPortA : resistorPortB;
+      const otherPort = positiveToA ? resistorB : resistorA;
+      const otherPortLabel = positiveToA ? resistorPortB : resistorPortA;
+
       if (directPositiveToLed && !resistorToLedPath) {
         addIssue(
           state,
-          "检测到电池正极直接连到了 LED 正端，但电阻没有连到 LED。电阻被晾在一边了，没有承担保护作用。",
+          `检测到电池正极（${batteryPosPort}）直接连到了 LED 正端（${ledAnodePort}），但电阻 ${positiveConnectedPortLabel} 虽然连了电池正极，电阻另一端（${otherPortLabel}）却没有连到 LED。电阻被旁路了，没有承担保护作用。正确连接：${batteryPosPort} → ${positiveConnectedPortLabel} → ${otherPortLabel} → ${ledAnodePort}。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, ledAnode, resistorA, resistorB], connections),
             markersFromPath(directPositiveToLed, connections)
@@ -544,24 +577,26 @@
       } else {
         addIssue(
           state,
-          "电阻已经接到了电池正极一侧，但它的另一端还没有接到 LED 正端。请把电阻和 LED 连起来。",
-          markersFromPorts([resistorA, resistorB, ledAnode], connections)
+          `电阻 ${positiveConnectedPortLabel} 已连接到电池正极，但电阻另一端（${otherPortLabel}）还没有连接到 LED 正端（${ledAnodePort}）。请用导线把 ${otherPortLabel} 连接到 ${ledAnodePort}。`,
+          markersFromPorts([otherPort, ledAnode], connections)
         );
       }
     } else {
       const positiveToResistor = positiveToA ? resistorA : resistorB;
+      const positiveToResistorLabel = positiveToA ? resistorPortA : resistorPortB;
       const resistorToLed = aToLed ? resistorA : resistorB;
+      const resistorToLedLabel = aToLed ? resistorPortA : resistorPortB;
 
       if (positiveToResistor === resistorToLed) {
         addIssue(
           state,
-          "电阻的同一端既连了电池正极又连了 LED 正端。这相当于把电阻短路了，电流不会经过电阻内部。",
+          `电阻的同一端（${positiveToResistorLabel}）既连了电池正极又连了 LED 正端。这相当于把电阻短路了，电流不会经过电阻内部。正确连接：电池正极应该连接到电阻的一端，LED 正端应该连接到电阻的另一端。`,
           markersFromPorts([positiveToResistor, resistorA, resistorB, ledAnode], connections)
         );
       } else {
         addIssue(
           state,
-          "电阻和 LED 的相对位置不对。当前结构不是标准的串联保护：电池正极 → 电阻一端 → 电阻另一端 → LED 正端。",
+          `电阻和 LED 的相对位置不对。当前连接不是标准串联保护结构。标准结构：电池正极（${batteryPosPort}）→ 电阻一端 → 电阻另一端 → LED 正端（${ledAnodePort}）。`,
           markersFromPorts([batteryPositive, resistorA, resistorB, ledAnode], connections)
         );
       }
@@ -572,7 +607,7 @@
     } else if (!ledCathodeConnected) {
       addIssue(
         state,
-        "LED 负端还没有接线，请用导线把它接回电池负极。",
+        `LED 负端（${ledCathodePort}）还没有接线。请用导线把 ${ledCathodePort} 连接到电池负极（${batteryNegPort}）。`,
         markersFromPorts([ledCathode, batteryNegative], connections)
       );
     } else {
@@ -580,7 +615,7 @@
       if (partialPath) {
         addIssue(
           state,
-          "LED 负端虽然有接线，但没有真正回到电池负极。检查一下 LED 负端到电池负极的路径是否完整。",
+          `LED 负端（${ledCathodePort}）虽然有接线，但没有真正回到电池负极（${batteryNegPort}）。检查一下 ${ledCathodePort} 到 ${batteryNegPort} 的路径是否完整。`,
           mergeMarkers(
             markersFromPorts([ledCathode, batteryNegative], connections),
             markersFromPath(partialPath, connections)
@@ -589,7 +624,7 @@
       } else {
         addIssue(
           state,
-          "LED 负端虽然有接线，但还没有真正回到电池负极。",
+          `LED 负端（${ledCathodePort}）虽然有接线，但还没有真正回到电池负极（${batteryNegPort}）。`,
           markersFromPorts([ledCathode, batteryNegative], connections)
         );
       }
@@ -600,7 +635,7 @@
     } else if (bypassPath) {
       addIssue(
         state,
-        "检测到存在绕过电阻的旁路：电池正极可以不经过电阻直接到 LED 正端，所以电阻没有真正承担保护作用。",
+        `检测到存在绕过电阻的旁路：电池正极（${batteryPosPort}）可以不经过电阻直接到 LED 正端（${ledAnodePort}）。所以电阻没有真正承担保护作用。请删除旁路导线，确保电流必须经过电阻。`,
         mergeMarkers(
           markersFromPorts([batteryPositive, ledAnode, resistorA, resistorB], connections),
           markersFromPath(bypassPath, connections)
@@ -626,6 +661,15 @@
     const resistorB = resolvePort(resistor.instanceId, "b");
     const ledAnode = resolvePort(led.instanceId, "anode");
     const ledCathode = resolvePort(led.instanceId, "cathode");
+
+    const switchPortA = `${sw.instanceId}:a`;
+    const switchPortB = `${sw.instanceId}:b`;
+    const resistorPortA = `${resistor.instanceId}:a`;
+    const resistorPortB = `${resistor.instanceId}:b`;
+    const batteryPosPort = `${battery.instanceId}:positive`;
+    const batteryNegPort = `${battery.instanceId}:negative`;
+    const ledAnodePort = `${led.instanceId}:anode`;
+    const ledCathodePort = `${led.instanceId}:cathode`;
 
     const orderedPath = findSeriesPath(
       graph,
@@ -671,40 +715,87 @@
     } else if (!switchAConnected && !switchBConnected) {
       addIssue(
         state,
-        "开关完全没有接入电路，两端都还是悬空的。请把开关接入主回路。",
-        markersFromPorts([switchA, switchB], connections)
+        `开关完全没有接入电路，${switchPortA} 和 ${switchPortB} 两端都还是悬空的。正确连接方式：电池正极（${batteryPosPort}）→ 开关一端 → 开关另一端 → 电阻一端 → 电阻另一端 → LED 正端（${ledAnodePort}）。`,
+        markersFromPorts([switchA, switchB, batteryPositive, ledAnode], connections)
       );
     } else if (!resistorAConnected && !resistorBConnected) {
       addIssue(
         state,
-        "电阻完全没有接入电路，两端都还是悬空的。请把电阻接入主回路。",
-        markersFromPorts([resistorA, resistorB], connections)
+        `电阻完全没有接入电路，${resistorPortA} 和 ${resistorPortB} 两端都还是悬空的。正确连接方式：开关一端 → 电阻一端 → 电阻另一端 → LED 正端（${ledAnodePort}）。`,
+        markersFromPorts([resistorA, resistorB, switchA, switchB, ledAnode], connections)
       );
     } else if (!switchAConnected || !switchBConnected) {
       const disconnectedPort = !switchAConnected ? switchA : switchB;
-      addIssue(
-        state,
-        "开关只接入了一端，电流无法完整经过开关再流向后续元件。请把悬空的那端也接入电路。",
-        markersFromPorts([switchA, switchB, disconnectedPort], connections)
-      );
+      const disconnectedPortLabel = !switchAConnected ? switchPortA : switchPortB;
+      const connectedPort = switchAConnected ? switchA : switchB;
+      const connectedPortLabel = switchAConnected ? switchPortA : switchPortB;
+
+      const connectedToPositive = positiveToSwitchA || positiveToSwitchB;
+      const connectedToResistor = switchToResistorA || switchToResistorB;
+
+      if (connectedToPositive && !connectedToResistor) {
+        addIssue(
+          state,
+          `开关 ${connectedPortLabel} 已连接到电池正极，但 ${disconnectedPortLabel} 还悬空。请把开关 ${disconnectedPortLabel} 连接到电阻的一端（${resistorPortA} 或 ${resistorPortB}）。`,
+          markersFromPorts([disconnectedPort, resistorA, resistorB], connections)
+        );
+      } else if (connectedToResistor && !connectedToPositive) {
+        addIssue(
+          state,
+          `开关 ${connectedPortLabel} 已连接到电阻，但 ${disconnectedPortLabel} 还悬空。请把开关 ${disconnectedPortLabel} 连接到电池正极（${batteryPosPort}）。`,
+          markersFromPorts([disconnectedPort, batteryPositive], connections)
+        );
+      } else {
+        addIssue(
+          state,
+          `开关只接入了一端（${connectedPortLabel}），${disconnectedPortLabel} 还悬空。电流无法完整经过开关再流向后续元件。请把悬空的那端也接入主回路。`,
+          markersFromPorts([switchA, switchB, disconnectedPort], connections)
+        );
+      }
     } else if (!resistorAConnected || !resistorBConnected) {
       const disconnectedPort = !resistorAConnected ? resistorA : resistorB;
-      addIssue(
-        state,
-        "电阻只接入了一端，电流无法完整经过电阻再流向 LED。请把悬空的那端也接入电路。",
-        markersFromPorts([resistorA, resistorB, disconnectedPort], connections)
-      );
+      const disconnectedPortLabel = !resistorAConnected ? resistorPortA : resistorPortB;
+      const connectedPort = resistorAConnected ? resistorA : resistorB;
+      const connectedPortLabel = resistorAConnected ? resistorPortA : resistorPortB;
+
+      const connectedToSwitch = switchToResistorA || switchToResistorB;
+      const connectedToLed = resistorToLedA || resistorToLedB;
+
+      if (connectedToSwitch && !connectedToLed) {
+        addIssue(
+          state,
+          `电阻 ${connectedPortLabel} 已连接到开关，但 ${disconnectedPortLabel} 还悬空。请把电阻 ${disconnectedPortLabel} 连接到 LED 正端（${ledAnodePort}）。`,
+          markersFromPorts([disconnectedPort, ledAnode], connections)
+        );
+      } else if (connectedToLed && !connectedToSwitch) {
+        addIssue(
+          state,
+          `电阻 ${connectedPortLabel} 已连接到 LED 正端，但 ${disconnectedPortLabel} 还悬空。请把电阻 ${disconnectedPortLabel} 连接到开关的一端（${switchPortA} 或 ${switchPortB}）。`,
+          markersFromPorts([disconnectedPort, switchA, switchB], connections)
+        );
+      } else {
+        addIssue(
+          state,
+          `电阻只接入了一端（${connectedPortLabel}），${disconnectedPortLabel} 还悬空。电流无法完整经过电阻再流向 LED。请把悬空的那端也接入主回路。`,
+          markersFromPorts([resistorA, resistorB, disconnectedPort], connections)
+        );
+      }
     } else if (!positiveToSwitchA && !positiveToSwitchB) {
       addIssue(
         state,
-        "电池正极还没有连接到开关的任何一端。主路径应该是：电池正极 → 开关 → 电阻 → LED 正端。",
+        `电池正极（${batteryPosPort}）还没有连接到开关的任何一端。应该用导线把 ${batteryPosPort} 连接到 ${switchPortA} 或 ${switchPortB}。`,
         markersFromPorts([batteryPositive, switchA, switchB], connections)
       );
     } else if (!switchToResistorA && !switchToResistorB) {
+      const positiveConnectedSwitchPort = positiveToSwitchA ? switchA : switchB;
+      const positiveConnectedSwitchPortLabel = positiveToSwitchA ? switchPortA : switchPortB;
+      const otherSwitchPort = positiveToSwitchA ? switchB : switchA;
+      const otherSwitchPortLabel = positiveToSwitchA ? switchPortB : switchPortA;
+
       if (directPositiveToLed && !resistorToLedA && !resistorToLedB) {
         addIssue(
           state,
-          "检测到电池正极直接连到了 LED 正端，但开关和电阻都没有连到 LED。保护元件被晾在一边了，没有承担保护作用。",
+          `检测到电池正极（${batteryPosPort}）直接连到了 LED 正端（${ledAnodePort}），但开关 ${positiveConnectedSwitchPortLabel} 虽然连了电池正极，电阻却没有连到这条路径上。保护元件被旁路了，没有承担保护作用。正确连接：${batteryPosPort} → ${positiveConnectedSwitchPortLabel} → ${otherSwitchPortLabel} → 电阻一端 → 电阻另一端 → ${ledAnodePort}。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, ledAnode, switchA, switchB, resistorA, resistorB], connections),
             markersFromPath(directPositiveToLed, connections)
@@ -713,7 +804,7 @@
       } else if (resistorOnlyPath && !switchOnlyPath) {
         addIssue(
           state,
-          "电阻已经串入回路，但开关被绕过了。检查一下：电池正极应该先经过开关，再到电阻。",
+          `电阻已经串入回路（电池正极 → 电阻 → LED），但开关被绕过了。正确顺序应该是：${batteryPosPort} → 开关 → 电阻 → ${ledAnodePort}。请确保电池正极先连到开关，再从开关连到电阻。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, switchA, switchB, resistorA, resistorB], connections),
             bypassResistorPath ? markersFromPath(bypassResistorPath, connections) : null
@@ -722,7 +813,7 @@
       } else if (switchOnlyPath && !resistorOnlyPath) {
         addIssue(
           state,
-          "开关已经串入回路并连到了 LED，但电阻没有接到这条路径上。电阻应该在开关和 LED 之间。",
+          `开关已经串入回路（电池正极 → 开关 → LED），但电阻没有接到这条路径上。电阻应该在开关和 LED 之间。正确连接：${positiveConnectedSwitchPortLabel} → ${otherSwitchPortLabel} → 电阻一端 → 电阻另一端 → ${ledAnodePort}。`,
           mergeMarkers(
             markersFromPorts([switchA, switchB, resistorA, resistorB, ledAnode], connections),
             markersFromPath(switchOnlyPath, connections)
@@ -731,16 +822,21 @@
       } else {
         addIssue(
           state,
-          "开关已经接到了电池正极一侧，但开关和电阻之间还没有连接。请用导线把开关和电阻连起来。",
-          markersFromPorts([switchA, switchB, resistorA, resistorB], connections)
+          `开关 ${positiveConnectedSwitchPortLabel} 已连接到电池正极，但开关另一端（${otherSwitchPortLabel}）还没有连接到电阻的任何一端。请用导线把 ${otherSwitchPortLabel} 连接到 ${resistorPortA} 或 ${resistorPortB}。`,
+          markersFromPorts([otherSwitchPort, resistorA, resistorB], connections)
         );
       }
     } else if (!resistorToLedA && !resistorToLedB) {
       const positiveToLed = findPath(graph, batteryPositive, ledAnode);
+      const switchConnectedResistorPort = switchToResistorA ? resistorA : resistorB;
+      const switchConnectedResistorPortLabel = switchToResistorA ? resistorPortA : resistorPortB;
+      const otherResistorPort = switchToResistorA ? resistorB : resistorA;
+      const otherResistorPortLabel = switchToResistorA ? resistorPortB : resistorPortA;
+
       if (positiveToLed && positiveToLed.length > 0) {
         addIssue(
           state,
-          "检测到电池正极可以到达 LED，但路径没有经过电阻。电阻被旁路了，没有承担保护作用。",
+          `检测到电池正极（${batteryPosPort}）可以到达 LED 正端（${ledAnodePort}），但路径没有经过电阻。电阻被旁路了，没有承担保护作用。请删除旁路导线，确保电流必须经过电阻。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, ledAnode, resistorA, resistorB], connections),
             markersFromPath(positiveToLed, connections)
@@ -749,25 +845,28 @@
       } else {
         addIssue(
           state,
-          "电阻已经接到了开关一侧，但它的另一端还没有接到 LED 正端。请把电阻和 LED 连起来。",
-          markersFromPorts([resistorA, resistorB, ledAnode], connections)
+          `电阻 ${switchConnectedResistorPortLabel} 已连接到开关，但电阻另一端（${otherResistorPortLabel}）还没有连接到 LED 正端（${ledAnodePort}）。请用导线把 ${otherResistorPortLabel} 连接到 ${ledAnodePort}。`,
+          markersFromPorts([otherResistorPort, ledAnode], connections)
         );
       }
     } else {
       const positiveToSwitchPort = positiveToSwitchA ? switchA : switchB;
+      const positiveToSwitchPortLabel = positiveToSwitchA ? switchPortA : switchPortB;
       const switchToResistorPort = switchToResistorA ? resistorA : resistorB;
+      const switchToResistorPortLabel = switchToResistorA ? resistorPortA : resistorPortB;
       const resistorToLedPort = resistorToLedA ? resistorA : resistorB;
+      const resistorToLedPortLabel = resistorToLedA ? resistorPortA : resistorPortB;
 
       if (switchToResistorPort === resistorToLedPort) {
         addIssue(
           state,
-          "电阻的同一端既连了开关又连了 LED。这相当于把电阻短路了，电流不会经过电阻内部。",
+          `电阻的同一端（${switchToResistorPortLabel}）既连了开关又连了 LED。这相当于把电阻短路了，电流不会经过电阻内部。正确连接：开关应该连接到电阻的一端，LED 正端应该连接到电阻的另一端。`,
           markersFromPorts([switchToResistorPort, resistorA, resistorB, ledAnode], connections)
         );
       } else if (resistorOnlyPath && !switchOnlyPath) {
         addIssue(
           state,
-          "虽然电阻串入了回路，但开关被绕过了。正确顺序应该是：电池正极 → 开关 → 电阻 → LED 正端。",
+          `虽然电阻串入了回路，但开关被绕过了。正确顺序应该是：${batteryPosPort} → 开关 → 电阻 → ${ledAnodePort}。请确保电池正极先经过开关，再到电阻。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, switchA, switchB, resistorA, resistorB, ledAnode], connections),
             bypassSwitchPath ? markersFromPath(bypassSwitchPath, connections) : null
@@ -776,7 +875,7 @@
       } else {
         addIssue(
           state,
-          "开关、电阻和 LED 的相对位置不对。当前结构不是标准的串联保护：电池正极 → 开关 → 电阻 → LED 正端。",
+          `开关、电阻和 LED 的相对位置不对。当前连接不是标准串联保护结构。标准结构：${batteryPosPort} → 开关一端 → 开关另一端 → 电阻一端 → 电阻另一端 → ${ledAnodePort}。`,
           markersFromPorts([batteryPositive, switchA, switchB, resistorA, resistorB, ledAnode], connections)
         );
       }
@@ -787,7 +886,7 @@
     } else if (!ledCathodeConnected) {
       addIssue(
         state,
-        "LED 负端还没有接线，请用导线把它接回电池负极。",
+        `LED 负端（${ledCathodePort}）还没有接线。请用导线把 ${ledCathodePort} 连接到电池负极（${batteryNegPort}）。`,
         markersFromPorts([ledCathode, batteryNegative], connections)
       );
     } else {
@@ -795,7 +894,7 @@
       if (partialPath) {
         addIssue(
           state,
-          "LED 负端虽然有接线，但没有真正回到电池负极。检查一下 LED 负端到电池负极的路径是否完整。",
+          `LED 负端（${ledCathodePort}）虽然有接线，但没有真正回到电池负极（${batteryNegPort}）。检查一下 ${ledCathodePort} 到 ${batteryNegPort} 的路径是否完整。`,
           mergeMarkers(
             markersFromPorts([ledCathode, batteryNegative], connections),
             markersFromPath(partialPath, connections)
@@ -804,7 +903,7 @@
       } else {
         addIssue(
           state,
-          "LED 负端虽然有接线，但还没有真正回到电池负极。",
+          `LED 负端（${ledCathodePort}）虽然有接线，但还没有真正回到电池负极（${batteryNegPort}）。`,
           markersFromPorts([ledCathode, batteryNegative], connections)
         );
       }
@@ -886,6 +985,15 @@
       ? resolvePort(load.instanceId, "cathode")
       : resolvePort(load.instanceId, "b");
 
+    const switchPortA = `${sw.instanceId}:a`;
+    const switchPortB = `${sw.instanceId}:b`;
+    const fusePortA = `${fuse.instanceId}:a`;
+    const fusePortB = `${fuse.instanceId}:b`;
+    const batteryPosPort = `${battery.instanceId}:positive`;
+    const batteryNegPort = `${battery.instanceId}:negative`;
+    const loadEntryPortLabel = load.id === "led" ? `${load.instanceId}:anode` : `${load.instanceId}:a`;
+    const loadExitPortLabel = load.id === "led" ? `${load.instanceId}:cathode` : `${load.instanceId}:b`;
+
     const orderedPath = findSeriesPath(
       graph,
       batteryPositive,
@@ -917,17 +1025,14 @@
     const positiveToSwitchB = findPath(graph, batteryPositive, switchB);
     const switchToFuseA = findPath(graph, switchA, fuseA) || findPath(graph, switchB, fuseA);
     const switchToFuseB = findPath(graph, switchA, fuseB) || findPath(graph, switchB, fuseB);
+    const fuseAToLoad = findPath(graph, fuseA, loadEntryPort);
+    const fuseBToLoad = findPath(graph, fuseB, loadEntryPort);
 
     const fuseAConnected = (graph[fuseA] || new Set()).size > 0;
     const fuseBConnected = (graph[fuseB] || new Set()).size > 0;
     const switchAConnected = (graph[switchA] || new Set()).size > 0;
     const switchBConnected = (graph[switchB] || new Set()).size > 0;
     const loadExitConnected = (graph[loadExitPort] || new Set()).size > 0;
-
-    const positiveToFuseA = findPath(graph, batteryPositive, fuseA);
-    const positiveToFuseB = findPath(graph, batteryPositive, fuseB);
-    const fuseAToLoad = findPath(graph, fuseA, loadEntryPort);
-    const fuseBToLoad = findPath(graph, fuseB, loadEntryPort);
 
     const loadType = load.id === "led" ? "LED" : "小灯泡";
 
@@ -936,40 +1041,87 @@
     } else if (!switchAConnected && !switchBConnected) {
       addIssue(
         state,
-        "开关完全没有接入电路，两端都还是悬空的。请把开关接入主回路。",
-        markersFromPorts([switchA, switchB], connections)
+        `开关完全没有接入电路，${switchPortA} 和 ${switchPortB} 两端都还是悬空的。正确连接方式：电池正极（${batteryPosPort}）→ 开关一端 → 开关另一端 → 保险丝一端 → 保险丝另一端 → ${loadType} 正端（${loadEntryPortLabel}）。`,
+        markersFromPorts([switchA, switchB, batteryPositive, loadEntryPort], connections)
       );
     } else if (!fuseAConnected && !fuseBConnected) {
       addIssue(
         state,
-        "保险丝完全没有接入电路，两端都还是悬空的。请把保险丝两端都接入主回路。",
-        markersFromPorts([fuseA, fuseB], connections)
+        `保险丝完全没有接入电路，${fusePortA} 和 ${fusePortB} 两端都还是悬空的。正确连接方式：开关一端 → 保险丝一端 → 保险丝另一端 → ${loadType} 正端（${loadEntryPortLabel}）。`,
+        markersFromPorts([fuseA, fuseB, switchA, switchB, loadEntryPort], connections)
       );
     } else if (!switchAConnected || !switchBConnected) {
       const disconnectedPort = !switchAConnected ? switchA : switchB;
-      addIssue(
-        state,
-        "开关只接入了一端，电流无法完整经过开关再流向后续元件。请把悬空的那端也接入电路。",
-        markersFromPorts([switchA, switchB, disconnectedPort], connections)
-      );
+      const disconnectedPortLabel = !switchAConnected ? switchPortA : switchPortB;
+      const connectedPort = switchAConnected ? switchA : switchB;
+      const connectedPortLabel = switchAConnected ? switchPortA : switchPortB;
+
+      const connectedToPositive = positiveToSwitchA || positiveToSwitchB;
+      const connectedToFuse = switchToFuseA || switchToFuseB;
+
+      if (connectedToPositive && !connectedToFuse) {
+        addIssue(
+          state,
+          `开关 ${connectedPortLabel} 已连接到电池正极，但 ${disconnectedPortLabel} 还悬空。请把开关 ${disconnectedPortLabel} 连接到保险丝的一端（${fusePortA} 或 ${fusePortB}）。`,
+          markersFromPorts([disconnectedPort, fuseA, fuseB], connections)
+        );
+      } else if (connectedToFuse && !connectedToPositive) {
+        addIssue(
+          state,
+          `开关 ${connectedPortLabel} 已连接到保险丝，但 ${disconnectedPortLabel} 还悬空。请把开关 ${disconnectedPortLabel} 连接到电池正极（${batteryPosPort}）。`,
+          markersFromPorts([disconnectedPort, batteryPositive], connections)
+        );
+      } else {
+        addIssue(
+          state,
+          `开关只接入了一端（${connectedPortLabel}），${disconnectedPortLabel} 还悬空。电流无法完整经过开关再流向后续元件。请把悬空的那端也接入主回路。`,
+          markersFromPorts([switchA, switchB, disconnectedPort], connections)
+        );
+      }
     } else if (!fuseAConnected || !fuseBConnected) {
       const disconnectedPort = !fuseAConnected ? fuseA : fuseB;
-      addIssue(
-        state,
-        "保险丝只接入了一端，电流无法完整经过保险丝再流向负载。请把悬空的那端也接入电路。",
-        markersFromPorts([fuseA, fuseB, disconnectedPort], connections)
-      );
+      const disconnectedPortLabel = !fuseAConnected ? fusePortA : fusePortB;
+      const connectedPort = fuseAConnected ? fuseA : fuseB;
+      const connectedPortLabel = fuseAConnected ? fusePortA : fusePortB;
+
+      const connectedToSwitch = switchToFuseA || switchToFuseB;
+      const connectedToLoad = fuseAToLoad || fuseBToLoad;
+
+      if (connectedToSwitch && !connectedToLoad) {
+        addIssue(
+          state,
+          `保险丝 ${connectedPortLabel} 已连接到开关，但 ${disconnectedPortLabel} 还悬空。请把保险丝 ${disconnectedPortLabel} 连接到 ${loadType} 正端（${loadEntryPortLabel}）。`,
+          markersFromPorts([disconnectedPort, loadEntryPort], connections)
+        );
+      } else if (connectedToLoad && !connectedToSwitch) {
+        addIssue(
+          state,
+          `保险丝 ${connectedPortLabel} 已连接到 ${loadType} 正端，但 ${disconnectedPortLabel} 还悬空。请把保险丝 ${disconnectedPortLabel} 连接到开关的一端（${switchPortA} 或 ${switchPortB}）。`,
+          markersFromPorts([disconnectedPort, switchA, switchB], connections)
+        );
+      } else {
+        addIssue(
+          state,
+          `保险丝只接入了一端（${connectedPortLabel}），${disconnectedPortLabel} 还悬空。电流无法完整经过保险丝再流向 ${loadType}。请把悬空的那端也接入主回路。`,
+          markersFromPorts([fuseA, fuseB, disconnectedPort], connections)
+        );
+      }
     } else if (!positiveToSwitchA && !positiveToSwitchB) {
       addIssue(
         state,
-        "电池正极还没有连接到开关的任何一端。主路径应该是：电池正极 → 开关 → 保险丝 → 负载。",
+        `电池正极（${batteryPosPort}）还没有连接到开关的任何一端。应该用导线把 ${batteryPosPort} 连接到 ${switchPortA} 或 ${switchPortB}。`,
         markersFromPorts([batteryPositive, switchA, switchB], connections)
       );
     } else if (!switchToFuseA && !switchToFuseB) {
+      const positiveConnectedSwitchPort = positiveToSwitchA ? switchA : switchB;
+      const positiveConnectedSwitchPortLabel = positiveToSwitchA ? switchPortA : switchPortB;
+      const otherSwitchPort = positiveToSwitchA ? switchB : switchA;
+      const otherSwitchPortLabel = positiveToSwitchA ? switchPortB : switchPortA;
+
       if (directPositiveToLoad && !fuseAToLoad && !fuseBToLoad) {
         addIssue(
           state,
-          `检测到电池正极直接连到了 ${loadType}，但开关和保险丝都没有连到负载。保护元件被晾在一边了，没有承担保护作用。`,
+          `检测到电池正极（${batteryPosPort}）直接连到了 ${loadType} 正端（${loadEntryPortLabel}），但开关 ${positiveConnectedSwitchPortLabel} 虽然连了电池正极，保险丝却没有连到这条路径上。保护元件被旁路了，没有承担保护作用。正确连接：${batteryPosPort} → ${positiveConnectedSwitchPortLabel} → ${otherSwitchPortLabel} → 保险丝一端 → 保险丝另一端 → ${loadEntryPortLabel}。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, loadEntryPort, switchA, switchB, fuseA, fuseB], connections),
             markersFromPath(directPositiveToLoad, connections)
@@ -978,7 +1130,7 @@
       } else if (fuseOnlyPath && !switchOnlyPath) {
         addIssue(
           state,
-          "保险丝已经串入回路，但开关被绕过了。检查一下：电池正极应该先经过开关，再到保险丝。",
+          `保险丝已经串入回路（电池正极 → 保险丝 → ${loadType}），但开关被绕过了。正确顺序应该是：${batteryPosPort} → 开关 → 保险丝 → ${loadEntryPortLabel}。请确保电池正极先连到开关，再从开关连到保险丝。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, switchA, switchB, fuseA, fuseB], connections),
             bypassFusePath ? markersFromPath(bypassFusePath, connections) : null
@@ -987,7 +1139,7 @@
       } else if (switchOnlyPath && !fuseOnlyPath) {
         addIssue(
           state,
-          `开关已经串入回路并连到了 ${loadType}，但保险丝没有接到这条路径上。保险丝应该在开关和 ${loadType} 之间。`,
+          `开关已经串入回路（电池正极 → 开关 → ${loadType}），但保险丝没有接到这条路径上。保险丝应该在开关和 ${loadType} 之间。正确连接：${positiveConnectedSwitchPortLabel} → ${otherSwitchPortLabel} → 保险丝一端 → 保险丝另一端 → ${loadEntryPortLabel}。`,
           mergeMarkers(
             markersFromPorts([switchA, switchB, fuseA, fuseB, loadEntryPort], connections),
             markersFromPath(switchOnlyPath, connections)
@@ -996,16 +1148,21 @@
       } else {
         addIssue(
           state,
-          "开关已经接到了电池正极一侧，但开关和保险丝之间还没有连接。请用导线把开关和保险丝连起来。",
-          markersFromPorts([switchA, switchB, fuseA, fuseB], connections)
+          `开关 ${positiveConnectedSwitchPortLabel} 已连接到电池正极，但开关另一端（${otherSwitchPortLabel}）还没有连接到保险丝的任何一端。请用导线把 ${otherSwitchPortLabel} 连接到 ${fusePortA} 或 ${fusePortB}。`,
+          markersFromPorts([otherSwitchPort, fuseA, fuseB], connections)
         );
       }
     } else if (!fuseAToLoad && !fuseBToLoad) {
       const positiveToLoad = findPath(graph, batteryPositive, loadEntryPort);
+      const switchConnectedFusePort = switchToFuseA ? fuseA : fuseB;
+      const switchConnectedFusePortLabel = switchToFuseA ? fusePortA : fusePortB;
+      const otherFusePort = switchToFuseA ? fuseB : fuseA;
+      const otherFusePortLabel = switchToFuseA ? fusePortB : fusePortA;
+
       if (positiveToLoad && positiveToLoad.length > 0) {
         addIssue(
           state,
-          `检测到电池正极可以到达 ${loadType}，但路径没有经过保险丝。保险丝被旁路了，没有承担保护作用。`,
+          `检测到电池正极（${batteryPosPort}）可以到达 ${loadType} 正端（${loadEntryPortLabel}），但路径没有经过保险丝。保险丝被旁路了，没有承担保护作用。请删除旁路导线，确保电流必须经过保险丝。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, loadEntryPort, fuseA, fuseB], connections),
             markersFromPath(positiveToLoad, connections)
@@ -1014,25 +1171,28 @@
       } else {
         addIssue(
           state,
-          `保险丝已经接到了开关一侧，但它的另一端还没有接到 ${loadType}。请把保险丝和 ${loadType} 连起来。`,
-          markersFromPorts([fuseA, fuseB, loadEntryPort], connections)
+          `保险丝 ${switchConnectedFusePortLabel} 已连接到开关，但保险丝另一端（${otherFusePortLabel}）还没有连接到 ${loadType} 正端（${loadEntryPortLabel}）。请用导线把 ${otherFusePortLabel} 连接到 ${loadEntryPortLabel}。`,
+          markersFromPorts([otherFusePort, loadEntryPort], connections)
         );
       }
     } else {
       const positiveToSwitchPort = positiveToSwitchA ? switchA : switchB;
+      const positiveToSwitchPortLabel = positiveToSwitchA ? switchPortA : switchPortB;
       const switchToFusePort = switchToFuseA ? fuseA : fuseB;
+      const switchToFusePortLabel = switchToFuseA ? fusePortA : fusePortB;
       const fuseToLoadPort = fuseAToLoad ? fuseA : fuseB;
+      const fuseToLoadPortLabel = fuseAToLoad ? fusePortA : fusePortB;
 
       if (switchToFusePort === fuseToLoadPort) {
         addIssue(
           state,
-          "保险丝的同一端既连了开关又连了负载。这相当于把保险丝短路了，电流不会经过保险丝内部。",
+          `保险丝的同一端（${switchToFusePortLabel}）既连了开关又连了 ${loadType}。这相当于把保险丝短路了，电流不会经过保险丝内部。正确连接：开关应该连接到保险丝的一端，${loadType} 正端应该连接到保险丝的另一端。`,
           markersFromPorts([switchToFusePort, fuseA, fuseB, loadEntryPort], connections)
         );
       } else if (fuseOnlyPath && !switchOnlyPath) {
         addIssue(
           state,
-          "虽然保险丝串入了回路，但开关被绕过了。正确顺序应该是：电池正极 → 开关 → 保险丝 → 负载。",
+          `虽然保险丝串入了回路，但开关被绕过了。正确顺序应该是：${batteryPosPort} → 开关 → 保险丝 → ${loadEntryPortLabel}。请确保电池正极先经过开关，再到保险丝。`,
           mergeMarkers(
             markersFromPorts([batteryPositive, switchA, switchB, fuseA, fuseB, loadEntryPort], connections),
             bypassSwitchPath ? markersFromPath(bypassSwitchPath, connections) : null
@@ -1041,7 +1201,7 @@
       } else {
         addIssue(
           state,
-          `开关、保险丝和 ${loadType} 的相对位置不对。当前结构不是标准的串联保护：电池正极 → 开关 → 保险丝 → ${loadType}。`,
+          `开关、保险丝和 ${loadType} 的相对位置不对。当前连接不是标准串联保护结构。标准结构：${batteryPosPort} → 开关一端 → 开关另一端 → 保险丝一端 → 保险丝另一端 → ${loadEntryPortLabel}。`,
           markersFromPorts([batteryPositive, switchA, switchB, fuseA, fuseB, loadEntryPort], connections)
         );
       }
@@ -1052,7 +1212,7 @@
     } else if (!loadExitConnected) {
       addIssue(
         state,
-        `${loadType} 负端还没有接线，请用导线把它接回电池负极。`,
+        `${loadType} 负端（${loadExitPortLabel}）还没有接线。请用导线把 ${loadExitPortLabel} 连接到电池负极（${batteryNegPort}）。`,
         markersFromPorts([loadExitPort, batteryNegative], connections)
       );
     } else {
@@ -1060,7 +1220,7 @@
       if (partialPath) {
         addIssue(
           state,
-          `${loadType} 负端虽然有接线，但没有真正回到电池负极。检查一下 ${loadType} 负端到电池负极的路径是否完整。`,
+          `${loadType} 负端（${loadExitPortLabel}）虽然有接线，但没有真正回到电池负极（${batteryNegPort}）。检查一下 ${loadExitPortLabel} 到 ${batteryNegPort} 的路径是否完整。`,
           mergeMarkers(
             markersFromPorts([loadExitPort, batteryNegative], connections),
             markersFromPath(partialPath, connections)
@@ -1069,7 +1229,7 @@
       } else {
         addIssue(
           state,
-          `${loadType} 负端虽然有接线，但还没有真正回到电池负极。`,
+          `${loadType} 负端（${loadExitPortLabel}）虽然有接线，但还没有真正回到电池负极（${batteryNegPort}）。`,
           markersFromPorts([loadExitPort, batteryNegative], connections)
         );
       }
@@ -1078,7 +1238,7 @@
     if (bypassSwitchPath && orderedPath) {
       addIssue(
         state,
-        "检测到存在绕过开关的旁路：电池正极可以不经过开关直接到达保险丝或负载，开关失去了控制作用。",
+        `检测到存在绕过开关的旁路：电池正极（${batteryPosPort}）可以不经过开关直接到达保险丝或 ${loadType} 正端（${loadEntryPortLabel}），开关失去了控制作用。请删除旁路导线，确保电流必须经过开关。`,
         mergeMarkers(
           markersFromPorts([switchA, switchB, batteryPositive, loadEntryPort], connections),
           markersFromPath(bypassSwitchPath, connections)
@@ -1087,7 +1247,7 @@
     } else if (bypassSwitchPath) {
       addIssue(
         state,
-        "检测到存在绕过开关的旁路，开关失去了控制作用。",
+        `检测到存在绕过开关的旁路，开关失去了控制作用。请删除旁路导线，确保电流必须经过开关。`,
         mergeMarkers(
           markersFromPorts([switchA, switchB, batteryPositive, loadEntryPort], connections),
           markersFromPath(bypassSwitchPath, connections)
@@ -1098,7 +1258,7 @@
     if (bypassFusePath && orderedPath) {
       addIssue(
         state,
-        "检测到存在绕过保险丝的旁路：电池正极可以不经过保险丝直接到负载，所以保险丝没有真正承担保护作用。",
+        `检测到存在绕过保险丝的旁路：电池正极（${batteryPosPort}）可以不经过保险丝直接到 ${loadType} 正端（${loadEntryPortLabel}）。所以保险丝没有真正承担保护作用。请删除旁路导线，确保电流必须经过保险丝。`,
         mergeMarkers(
           markersFromPorts([fuseA, fuseB, batteryPositive, loadEntryPort], connections),
           markersFromPath(bypassFusePath, connections)
@@ -1107,7 +1267,7 @@
     } else if (bypassFusePath) {
       addIssue(
         state,
-        "检测到存在绕过保险丝的旁路，保险丝失去了保护作用。",
+        `检测到存在绕过保险丝的旁路，保险丝失去了保护作用。请删除旁路导线，确保电流必须经过保险丝。`,
         mergeMarkers(
           markersFromPorts([fuseA, fuseB, batteryPositive, loadEntryPort], connections),
           markersFromPath(bypassFusePath, connections)
