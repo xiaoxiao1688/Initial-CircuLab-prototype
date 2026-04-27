@@ -444,6 +444,12 @@
     refs.feedbackBadge.textContent = "待开始";
     refs.feedbackBadge.className = "badge";
     clearSimulationState();
+    refs.feedbackSummary.textContent = levelScaffold.startPrompt;
+    refs.feedbackPass.innerHTML = "<li>验证通过后，这里会显示已经完成的条件。</li>";
+    refs.feedbackFail.innerHTML = levelScaffold.checkpoints.length
+      ? levelScaffold.checkpoints.map((item) => `<li>${item}</li>`).join("")
+      : '<li>开始吧，做这道题目，然后点击“验证电路”。</li>';
+    refs.feedbackBadge.textContent = "待开始";
     
     refs.boardCanvas.classList.remove("is-running");
     if (refs.boardToolbar) {
@@ -1123,6 +1129,13 @@
       : "<li>没有待修正项。</li>";
     refs.feedbackBadge.textContent = result.passed ? "已通过" : "未通过";
     refs.feedbackBadge.className = `badge ${result.passed ? "is-success" : "is-warning"}`;
+    if (result.passItems.length === 0) {
+      refs.feedbackPass.innerHTML = "<li>暂时还没有通过项。</li>";
+    }
+    if (result.failItems.length === 0) {
+      refs.feedbackFail.innerHTML = "<li>没有待修正项。</li>";
+    }
+    refs.feedbackBadge.textContent = result.passed ? "已通过" : "未通过";
 
     const feedbackPanel = document.querySelector(".feedback-panel");
     if (feedbackPanel) {

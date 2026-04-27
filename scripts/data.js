@@ -219,6 +219,22 @@ window.CIRCUIT_DATA = {
       starterComponents: ["battery", "resistor", "led", "wire", "wire", "wire"],
       successText: "你已经把电阻正确串入 LED 主回路，形成了更合理的保护结构。",
       objective: "resistor-protects-led"
+    },
+    {
+      id: "level-5",
+      title: "第 5 关 用开关控制带保护电阻的 LED",
+      description: "在上一关的保护电阻结构里再串入开关，让开关负责控制，电阻继续承担保护作用。",
+      goals: [
+        "包含电池、开关、电阻和 LED",
+        "主路径要依次经过开关和电阻，再到 LED 正端",
+        "LED 负端最终回到电池负极",
+        "不能绕过开关，也不能绕过电阻"
+      ],
+      requiredTypes: ["battery", "switch", "resistor", "led"],
+      recommendedTypes: ["wire"],
+      starterComponents: ["battery", "switch", "resistor", "led", "wire", "wire", "wire", "wire"],
+      successText: "你已经把开关和保护电阻都正确串入了 LED 主回路。",
+      objective: "switch-protects-led"
     }
   ]
 };
