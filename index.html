@@ -89,18 +89,31 @@
 
             <div class="board-toolbar">
               <div class="board-hint">
+                <button id="toggle-sidebar" class="button button--ghost sidebar-toggle" type="button" aria-label="切换侧边栏">
+                  <span class="sidebar-toggle-icon">☰</span>
+                </button>
                 <span class="badge">布线状态</span>
                 <strong id="wiring-status">点击一个端口开始布线</strong>
               </div>
               <div class="board-actions">
+                <div class="zoom-controls">
+                  <button id="zoom-out" class="button button--ghost" type="button" aria-label="缩小实验台">-</button>
+                  <strong id="zoom-level" class="zoom-level">100%</strong>
+                  <button id="zoom-in" class="button button--ghost" type="button" aria-label="放大实验台">+</button>
+                  <button id="zoom-reset" class="button button--ghost" type="button">100%</button>
+                </div>
                 <button id="cancel-wire" class="button button--ghost">取消布线</button>
                 <button id="reset-board" class="button button--ghost">重置本关</button>
               </div>
             </div>
 
             <div id="board-canvas" class="board-canvas">
-              <svg id="wire-layer" class="wire-layer"></svg>
-              <div id="board-components" class="board-components"></div>
+              <div id="board-viewport" class="board-viewport">
+                <div id="board-surface" class="board-surface">
+                  <svg id="wire-layer" class="wire-layer"></svg>
+                  <div id="board-components" class="board-components"></div>
+                </div>
+              </div>
             </div>
           </section>
         </section>
@@ -139,8 +152,22 @@
               </div>
             </div>
           </section>
+
+          <section class="panel simulation-panel">
+            <div class="panel__heading">
+              <h2>仿真波形</h2>
+              <span id="simulation-status" class="badge">未运行</span>
+            </div>
+            <div id="simulation-summary" class="simulation-summary">
+              点击“验证电路”后会调用 Python 仿真器，返回电压、电流和波形结果。
+            </div>
+            <div id="simulation-metrics" class="simulation-metrics"></div>
+            <div id="waveform-traces" class="waveform-traces"></div>
+          </section>
         </aside>
       </main>
+
+      <div id="sidebar-overlay" class="sidebar-overlay"></div>
     </div>
 
     <template id="lesson-card-template">
