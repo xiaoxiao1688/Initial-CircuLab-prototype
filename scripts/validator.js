@@ -45,6 +45,16 @@
         "LED 负端仍要回到电池负极。",
         "不能绕过开关，也不能绕过电阻。"
       ]
+    },
+    "fuse-protects-load": {
+      startPrompt: "开始吧，搭一个安全回路：目标是让保险丝真正串入主路径，电流必须经过保险丝才能到达负载。",
+      checkpoints: [
+        "先确认电池、开关、保险丝和负载（LED 或小灯泡）都已摆放。",
+        "主路径顺序应类似：电池正极 → 开关 → 保险丝 → 负载。",
+        "负载负端必须回到电池负极形成闭合回路。",
+        "保险丝两端都要接入电路，不能只接一端悬空。",
+        "最重要：不能有导线绕过保险丝直接连接开关和负载。"
+      ]
     }
   };
 
@@ -53,7 +63,8 @@
     "switch-controls-led": evaluateSwitchLevel,
     "parallel-loads": evaluateParallelLevel,
     "resistor-protects-led": evaluateResistorLevel,
-    "switch-protects-led": evaluateProtectedSwitchLevel
+    "switch-protects-led": evaluateProtectedSwitchLevel,
+    "fuse-protects-load": evaluateFuseLevel
   };
 
   function getLevelScaffold(level) {
@@ -623,6 +634,139 @@
     }
   }
 
+  function evaluateFuseLevel({ components, connections, graph, state }) {
+    const battery = components.find((component) => component.id === "battery");
+    const sw = components.find((component) => component.id === "switch");
+    const fuse = components.find((component) => component.id === "fuse");
+    const led = components.find((component) => component.id === "led");
+    const lamp = components.find((component) => component.id === "lamp");
+
+    if (!battery || !sw || !fuse) {
+      return;
+    }
+
+    const load = led || lamp;
+    if (!load) {
+      addIssue(state, "缺少负载元件：请放置一个 LED 或小灯泡作为负载。");
+      return;
+    }
+
+    const batteryPositive = resolvePort(battery.instanceId, "positive");
+    const batteryNegative = resolvePort(battery.instanceId, "negative");
+    const switchA = resolvePort(sw.instanceId, "a");
+    const switchB = resolvePort(sw.instanceId, "b");
+    const fuseA = resolvePort(fuse.instanceId, "a");
+    const fuseB = resolvePort(fuse.instanceId, "b");
+
+    const loadEntryPort = load.id === "led"
+      ? resolvePort(load.instanceId, "anode")
+      : resolvePort(load.instanceId, "a");
+    const loadExitPort = load.id === "led"
+      ? resolvePort(load.instanceId, "cathode")
+      : resolvePort(load.instanceId, "b");
+
+    const orderedPath = findSeriesPath(
+      graph,
+      batteryPositive,
+      [
+        [switchA, switchB],
+        [fuseA, fuseB]
+      ],
+      loadEntryPort
+    );
+
+    const loadBackPath = findPath(graph, loadExitPort, batteryNegative);
+    const bypassSwitchPath = findPath(graph, batteryPositive, loadEntryPort, new Set([switchA, switchB]));
+    const bypassFusePath = findPath(graph, batteryPositive, loadEntryPort, new Set([fuseA, fuseB]));
+
+    const fuseAConnected = (graph[fuseA] || new Set()).size > 0;
+    const fuseBConnected = (graph[fuseB] || new Set()).size > 0;
+    const loadExitConnected = (graph[loadExitPort] || new Set()).size > 0;
+
+    const positiveToFuseA = findPath(graph, batteryPositive, fuseA);
+    const positiveToFuseB = findPath(graph, batteryPositive, fuseB);
+    const fuseAToLoad = findPath(graph, fuseA, loadEntryPort);
+    const fuseBToLoad = findPath(graph, fuseB, loadEntryPort);
+
+    const loadType = load.id === "led" ? "LED" : "小灯泡";
+
+    if (orderedPath) {
+      addFinding(state, `开关和保险丝都已经串入 ${loadType} 主回路。`);
+    } else if (!fuseAConnected && !fuseBConnected) {
+      addIssue(
+        state,
+        "保险丝完全没有接入电路，两端都还是悬空的。",
+        markersFromPorts([fuseA, fuseB], connections)
+      );
+    } else if (!fuseAConnected || !fuseBConnected) {
+      addIssue(
+        state,
+        "保险丝只接入了一端，电流无法完整经过保险丝再流向负载。",
+        markersFromPorts([fuseA, fuseB, loadEntryPort], connections)
+      );
+    } else if (!positiveToFuseA && !positiveToFuseB) {
+      addIssue(
+        state,
+        "电池正极还没有先到保险丝，主路径起点就错了。",
+        markersFromPorts([batteryPositive, fuseA, fuseB], connections)
+      );
+    } else if (!fuseAToLoad && !fuseBToLoad) {
+      addIssue(
+        state,
+        "保险丝已经接到了主路径前半段，但它的另一端还没有接到负载。",
+        markersFromPorts([fuseA, fuseB, loadEntryPort], connections)
+      );
+    } else {
+      addIssue(
+        state,
+        `开关和保险丝与 ${loadType} 的相对位置还不对，没有形成稳定的串联保护结构。`,
+        markersFromPorts([batteryPositive, switchA, switchB, fuseA, fuseB, loadEntryPort], connections)
+      );
+    }
+
+    if (loadBackPath) {
+      addFinding(state, `${loadType} 负端已经回到电池负极。`);
+    } else if (!loadExitConnected) {
+      addIssue(
+        state,
+        `${loadType} 负端还没有接线，请把它接回电池负极。`,
+        markersFromPorts([loadExitPort, batteryNegative], connections)
+      );
+    } else {
+      addIssue(
+        state,
+        `${loadType} 负端虽然有接线，但还没有真正回到电池负极。`,
+        markersFromPorts([loadExitPort, batteryNegative], connections)
+      );
+    }
+
+    if (bypassSwitchPath) {
+      addIssue(
+        state,
+        "检测到存在绕过开关的旁路，开关失去了控制作用。",
+        mergeMarkers(
+          markersFromPorts([switchA, switchB, batteryPositive, loadEntryPort], connections),
+          markersFromPath(bypassSwitchPath, connections)
+        )
+      );
+    }
+
+    if (bypassFusePath) {
+      addIssue(
+        state,
+        "检测到存在绕过保险丝的旁路：电池正极可以不经过保险丝直接到负载，所以保险丝没有真正承担保护作用。",
+        mergeMarkers(
+          markersFromPorts([fuseA, fuseB, batteryPositive, loadEntryPort], connections),
+          markersFromPath(bypassFusePath, connections)
+        )
+      );
+    }
+
+    if (!bypassSwitchPath && !bypassFusePath && orderedPath && loadBackPath) {
+      addFinding(state, "没有发现绕过开关或保险丝的旁路连接。");
+    }
+  }
+
   function getDisplayName(componentId) {
     const map = {
       battery: "电池",
@@ -630,7 +774,8 @@
       switch: "开关",
       wire: "导线",
       lamp: "小灯泡",
-      resistor: "电阻"
+      resistor: "电阻",
+      fuse: "保险丝"
     };
 
     return map[componentId] || componentId;
