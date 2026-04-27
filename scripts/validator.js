@@ -30,12 +30,30 @@
       ]
     },
     "resistor-protects-led": {
-      startPrompt: "开始吧，做这道题目。先让电池正极接到电阻，再从电阻接到 LED 正端，最后把 LED 负端接回电池负极。",
+      startPrompt: "开始吧，做这道题目。目标是把电阻正确串入 LED 主回路：电池正极 → 电阻 → LED 正端 → LED 负端 → 电池负极。",
       checkpoints: [
-        "主路径顺序要像这样：电池正极 -> 电阻 -> LED 正端。",
+        "电池正极要先到电阻的一端。",
+        "电阻另一端要再到 LED 正端，不能只接一端。",
         "LED 负端必须回到电池负极。",
-        "不能存在绕过电阻直接到 LED 的旁路。",
-        "第 4 关开始已经预留了可扩展验证骨架，后面可以继续加更细的教学规则。"
+        "不能存在绕过电阻直接到 LED 正端的旁路。"
+      ]
+    },
+    "switch-protects-led": {
+      startPrompt: "新任务开始了：在带保护电阻的 LED 主回路里再串入开关，让开关和电阻都处在主路径上。",
+      checkpoints: [
+        "主路径顺序应类似：电池正极 → 开关 → 电阻 → LED 正端。",
+        "LED 负端仍要回到电池负极。",
+        "不能绕过开关，也不能绕过电阻。"
+      ]
+    },
+    "fuse-protects-load": {
+      startPrompt: "开始吧，搭一个安全回路：目标是让保险丝真正串入主路径，电流必须经过保险丝才能到达负载。",
+      checkpoints: [
+        "先确认电池、开关、保险丝和负载（LED 或小灯泡）都已摆放。",
+        "主路径顺序应类似：电池正极 → 开关 → 保险丝 → 负载。",
+        "负载负端必须回到电池负极形成闭合回路。",
+        "保险丝两端都要接入电路，不能只接一端悬空。",
+        "最重要：不能有导线绕过保险丝直接连接开关和负载。"
       ]
     }
   };
@@ -44,7 +62,9 @@
     "closed-led-loop": evaluateLedLoop,
     "switch-controls-led": evaluateSwitchLevel,
     "parallel-loads": evaluateParallelLevel,
-    "resistor-protects-led": evaluateResistorLevel
+    "resistor-protects-led": evaluateResistorLevel,
+    "switch-protects-led": evaluateProtectedSwitchLevel,
+    "fuse-protects-load": evaluateFuseLevel
   };
 
   function getLevelScaffold(level) {
@@ -52,133 +72,6 @@
       return DEFAULT_SCAFFOLD;
     }
     return OBJECTIVE_SCAFFOLDS[level.objective] || DEFAULT_SCAFFOLD;
-  }
-
-  function buildGraph(components, connections, switchStates = {}) {
-    const graph = {};
-
-    components.forEach((component) => {
-      (component.ports || []).forEach((port) => {
-        const portId = resolvePort(component.instanceId, port.id);
-        graph[portId] = graph[portId] || new Set();
-      });
-
-      getInternalConductivePairs(component, switchStates).forEach(([from, to]) => {
-        connect(graph, resolvePort(component.instanceId, from), resolvePort(component.instanceId, to));
-      });
-    });
-
-    connections.forEach((connection) => {
-      connect(graph, connection.from, connection.to);
-    });
-
-    return { graph };
-  }
-
-  function getInternalConductivePairs(component, switchStates = {}) {
-    if (component.id === "led" || component.id === "battery") {
-      return [];
-    }
-
-    if (component.id === "switch") {
-      const isClosed = switchStates[component.instanceId] === true;
-      if (isClosed && component.ports.length >= 2) {
-        return [[component.ports[0].id, component.ports[1].id]];
-      }
-      return [];
-    }
-
-    if ((component.ports || []).length < 2) {
-      return [];
-    }
-
-    return [[component.ports[0].id, component.ports[1].id]];
-  }
-
-  function connect(graph, from, to) {
-    if (!from || !to) {
-      return;
-    }
-    graph[from] = graph[from] || new Set();
-    graph[to] = graph[to] || new Set();
-    graph[from].add(to);
-    graph[to].add(from);
-  }
-
-  function hasPath(graph, from, to, blockedNodes = new Set()) {
-    if (!graph[from] || !graph[to] || blockedNodes.has(from) || blockedNodes.has(to)) {
-      return false;
-    }
-
-    const queue = [from];
-    const visited = new Set([from]);
-
-    while (queue.length > 0) {
-      const current = queue.shift();
-      if (current === to) {
-        return true;
-      }
-
-      graph[current].forEach((next) => {
-        if (!visited.has(next) && !blockedNodes.has(next)) {
-          visited.add(next);
-          queue.push(next);
-        }
-      });
-    }
-
-    return false;
-  }
-
-  function resolvePort(instanceId, portId) {
-    return `${instanceId}:${portId}`;
-  }
-
-  function getComponentsById(components, id) {
-    return components.filter((component) => component.id === id);
-  }
-
-  function createValidationState(level) {
-    const scaffold = getLevelScaffold(level);
-    return {
-      level,
-      scaffold,
-      passItems: [],
-      failItems: [],
-      errorInstances: new Set(),
-      errorPorts: new Set(),
-      errorConnections: new Set()
-    };
-  }
-
-  function addFinding(state, message) {
-    if (message && !state.passItems.includes(message)) {
-      state.passItems.push(message);
-    }
-  }
-
-  function addIssue(state, message, markers = {}) {
-    if (message && !state.failItems.includes(message)) {
-      state.failItems.push(message);
-    }
-
-    (markers.instances || []).forEach((value) => {
-      if (value) {
-        state.errorInstances.add(value);
-      }
-    });
-
-    (markers.ports || []).forEach((value) => {
-      if (value) {
-        state.errorPorts.add(value);
-      }
-    });
-
-    (markers.connections || []).forEach((value) => {
-      if (value) {
-        state.errorConnections.add(value);
-      }
-    });
   }
 
   function validate(level, components, connections, switchStates = {}) {
@@ -215,7 +108,253 @@
     };
   }
 
-  function evaluateLedLoop({ components, graph, state }) {
+  function createValidationState(level) {
+    return {
+      level,
+      scaffold: getLevelScaffold(level),
+      passItems: [],
+      failItems: [],
+      errorInstances: new Set(),
+      errorPorts: new Set(),
+      errorConnections: new Set()
+    };
+  }
+
+  function addFinding(state, message) {
+    if (message && !state.passItems.includes(message)) {
+      state.passItems.push(message);
+    }
+  }
+
+  function addIssue(state, message, markers = {}) {
+    if (message && !state.failItems.includes(message)) {
+      state.failItems.push(message);
+    }
+
+    (markers.instances || []).forEach((instanceId) => {
+      if (instanceId) {
+        state.errorInstances.add(instanceId);
+      }
+    });
+    (markers.ports || []).forEach((portRef) => {
+      if (portRef) {
+        state.errorPorts.add(portRef);
+      }
+    });
+    (markers.connections || []).forEach((connectionId) => {
+      if (connectionId) {
+        state.errorConnections.add(connectionId);
+      }
+    });
+  }
+
+  function buildGraph(components, connections, switchStates = {}) {
+    const graph = {};
+
+    components.forEach((component) => {
+      (component.ports || []).forEach((port) => {
+        const portRef = resolvePort(component.instanceId, port.id);
+        graph[portRef] = graph[portRef] || new Set();
+      });
+
+      getInternalConductivePairs(component, switchStates).forEach(([from, to]) => {
+        connect(graph, resolvePort(component.instanceId, from), resolvePort(component.instanceId, to));
+      });
+    });
+
+    connections.forEach((connection) => {
+      connect(graph, connection.from, connection.to);
+    });
+
+    return { graph };
+  }
+
+  function getInternalConductivePairs(component, switchStates = {}) {
+    if (component.id === "battery" || component.id === "led") {
+      return [];
+    }
+
+    if (component.id === "switch") {
+      const isClosed = switchStates[component.instanceId] === true;
+      if (isClosed && component.ports.length >= 2) {
+        return [[component.ports[0].id, component.ports[1].id]];
+      }
+      return [];
+    }
+
+    if ((component.ports || []).length < 2) {
+      return [];
+    }
+
+    return [[component.ports[0].id, component.ports[1].id]];
+  }
+
+  function connect(graph, from, to) {
+    if (!from || !to) {
+      return;
+    }
+    graph[from] = graph[from] || new Set();
+    graph[to] = graph[to] || new Set();
+    graph[from].add(to);
+    graph[to].add(from);
+  }
+
+  function hasPath(graph, from, to, blockedNodes = new Set()) {
+    return findPath(graph, from, to, blockedNodes) !== null;
+  }
+
+  function findPath(graph, from, to, blockedNodes = new Set()) {
+    if (!graph[from] || !graph[to] || blockedNodes.has(from) || blockedNodes.has(to)) {
+      return null;
+    }
+
+    const queue = [[from]];
+    const visited = new Set([from]);
+
+    while (queue.length > 0) {
+      const path = queue.shift();
+      const current = path[path.length - 1];
+
+      if (current === to) {
+        return path;
+      }
+
+      graph[current].forEach((next) => {
+        if (!visited.has(next) && !blockedNodes.has(next)) {
+          visited.add(next);
+          queue.push([...path, next]);
+        }
+      });
+    }
+
+    return null;
+  }
+
+  function getComponentsById(components, id) {
+    return components.filter((component) => component.id === id);
+  }
+
+  function resolvePort(instanceId, portId) {
+    return `${instanceId}:${portId}`;
+  }
+
+  function getInstanceId(portRef) {
+    return typeof portRef === "string" ? portRef.split(":")[0] : null;
+  }
+
+  function mergeMarkers(...markers) {
+    const merged = {
+      instances: new Set(),
+      ports: new Set(),
+      connections: new Set()
+    };
+
+    markers.forEach((marker) => {
+      if (!marker) {
+        return;
+      }
+      (marker.instances || []).forEach((value) => merged.instances.add(value));
+      (marker.ports || []).forEach((value) => merged.ports.add(value));
+      (marker.connections || []).forEach((value) => merged.connections.add(value));
+    });
+
+    return {
+      instances: Array.from(merged.instances),
+      ports: Array.from(merged.ports),
+      connections: Array.from(merged.connections)
+    };
+  }
+
+  function markersFromPorts(ports, connections = []) {
+    const portSet = new Set(ports || []);
+    const instanceSet = new Set();
+    portSet.forEach((portRef) => {
+      const instanceId = getInstanceId(portRef);
+      if (instanceId) {
+        instanceSet.add(instanceId);
+      }
+    });
+
+    const connectionIds = (connections || [])
+      .filter((connection) => portSet.has(connection.from) || portSet.has(connection.to))
+      .map((connection) => connection.id);
+
+    return {
+      instances: Array.from(instanceSet),
+      ports: Array.from(portSet),
+      connections: connectionIds
+    };
+  }
+
+  function markersFromPath(path, connections = []) {
+    if (!path || path.length === 0) {
+      return { instances: [], ports: [], connections: [] };
+    }
+
+    const instanceSet = new Set();
+    const portSet = new Set(path);
+    path.forEach((portRef) => {
+      const instanceId = getInstanceId(portRef);
+      if (instanceId) {
+        instanceSet.add(instanceId);
+      }
+    });
+
+    const connectionIds = [];
+    for (let index = 0; index < path.length - 1; index += 1) {
+      const from = path[index];
+      const to = path[index + 1];
+      const connection = connections.find(
+        (item) =>
+          (item.from === from && item.to === to) ||
+          (item.from === to && item.to === from)
+      );
+      if (connection) {
+        connectionIds.push(connection.id);
+      }
+    }
+
+    return {
+      instances: Array.from(instanceSet),
+      ports: Array.from(portSet),
+      connections: connectionIds
+    };
+  }
+
+  function findSeriesPath(graph, start, pairs, end) {
+    function walk(currentStart, pairIndex, collectedPath) {
+      if (pairIndex >= pairs.length) {
+        const endPath = findPath(graph, currentStart, end);
+        if (!endPath) {
+          return null;
+        }
+        return [...collectedPath, ...endPath.slice(1)];
+      }
+
+      const [portA, portB] = pairs[pairIndex];
+      const orientations = [
+        [portA, portB],
+        [portB, portA]
+      ];
+
+      for (const [entryPort, exitPort] of orientations) {
+        const entryPath = findPath(graph, currentStart, entryPort);
+        if (!entryPath) {
+          continue;
+        }
+        const nextPath = walk(exitPort, pairIndex + 1, [...collectedPath, ...entryPath.slice(1)]);
+        if (nextPath) {
+          return nextPath;
+        }
+      }
+
+      return null;
+    }
+
+    return walk(start, 0, [start]);
+  }
+
+  function evaluateLedLoop({ components, connections, graph, state }) {
     const battery = components.find((component) => component.id === "battery");
     const led = components.find((component) => component.id === "led");
     if (!battery || !led) {
@@ -227,37 +366,29 @@
     const ledAnode = resolvePort(led.instanceId, "anode");
     const ledCathode = resolvePort(led.instanceId, "cathode");
 
-    const posToAnode = hasPath(graph, batteryPositive, ledAnode);
-    const cathodeToNegative = hasPath(graph, ledCathode, batteryNegative);
+    const posPath = findPath(graph, batteryPositive, ledAnode);
+    const negPath = findPath(graph, ledCathode, batteryNegative);
 
-    if (posToAnode) {
+    if (posPath) {
       addFinding(state, "电池正极已经连接到 LED 正端。");
     } else {
-      addIssue(state, "电池正极还没有有效连接到 LED 正端。", {
-        instances: [battery.instanceId, led.instanceId],
-        ports: [batteryPositive, ledAnode]
-      });
+      addIssue(state, "电池正极还没有有效连接到 LED 正端。", markersFromPorts([batteryPositive, ledAnode], connections));
     }
 
-    if (cathodeToNegative) {
+    if (negPath) {
       addFinding(state, "LED 负端已经回到电池负极。");
     } else {
-      addIssue(state, "LED 负端还没有回到电池负极。", {
-        instances: [battery.instanceId, led.instanceId],
-        ports: [ledCathode, batteryNegative]
-      });
+      addIssue(state, "LED 负端还没有回到电池负极。", markersFromPorts([ledCathode, batteryNegative], connections));
     }
 
-    if (posToAnode && cathodeToNegative) {
+    if (posPath && negPath) {
       addFinding(state, "已经形成符合教学模型的闭合 LED 回路。");
     } else {
-      addIssue(state, "电路没有形成完整闭合回路。", {
-        instances: [battery.instanceId, led.instanceId]
-      });
+      addIssue(state, "电路没有形成完整闭合回路。", markersFromPorts([batteryPositive, ledAnode, ledCathode, batteryNegative], connections));
     }
   }
 
-  function evaluateSwitchLevel({ components, graph, state }) {
+  function evaluateSwitchLevel({ components, connections, graph, state }) {
     const battery = components.find((component) => component.id === "battery");
     const led = components.find((component) => component.id === "led");
     const sw = components.find((component) => component.id === "switch");
@@ -272,41 +403,37 @@
     const switchA = resolvePort(sw.instanceId, "a");
     const switchB = resolvePort(sw.instanceId, "b");
 
-    const throughSwitch =
-      hasPath(graph, batteryPositive, switchA) &&
-      hasPath(graph, switchB, ledAnode);
-    const ledBack = hasPath(graph, ledCathode, batteryNegative);
-    const bypassSwitch = hasPath(graph, batteryPositive, ledAnode, new Set([switchA, switchB]));
+    const switchPath = findSeriesPath(graph, batteryPositive, [[switchA, switchB]], ledAnode);
+    const ledBack = findPath(graph, ledCathode, batteryNegative);
+    const bypassPath = findPath(graph, batteryPositive, ledAnode, new Set([switchA, switchB]));
 
-    if (throughSwitch) {
+    if (switchPath) {
       addFinding(state, "主路径已经经过开关并连接到 LED。");
     } else {
-      addIssue(state, "开关没有真正串入主回路，请让正极到 LED 的路径经过开关。", {
-        instances: [battery.instanceId, sw.instanceId, led.instanceId],
-        ports: [batteryPositive, switchA, switchB, ledAnode]
-      });
+      addIssue(state, "开关没有真正串入主回路，请让正极到 LED 的路径经过开关。", markersFromPorts([batteryPositive, switchA, switchB, ledAnode], connections));
     }
 
     if (ledBack) {
       addFinding(state, "LED 负端仍能回到电池负极。");
     } else {
-      addIssue(state, "LED 负端没有回到电池负极，回路不完整。", {
-        instances: [battery.instanceId, led.instanceId],
-        ports: [ledCathode, batteryNegative]
-      });
+      addIssue(state, "LED 负端没有回到电池负极，回路不完整。", markersFromPorts([ledCathode, batteryNegative], connections));
     }
 
-    if (!bypassSwitch && throughSwitch) {
+    if (!bypassPath && switchPath) {
       addFinding(state, "没有发现绕过开关的旁路连接。");
-    } else if (bypassSwitch) {
-      addIssue(state, "检测到正极可以绕过开关直达 LED，开关失去了控制作用。", {
-        instances: [battery.instanceId, sw.instanceId, led.instanceId],
-        ports: [batteryPositive, ledAnode]
-      });
+    } else if (bypassPath) {
+      addIssue(
+        state,
+        "检测到正极可以绕过开关直达 LED，开关失去了控制作用。",
+        mergeMarkers(
+          markersFromPorts([batteryPositive, ledAnode], connections),
+          markersFromPath(bypassPath, connections)
+        )
+      );
     }
   }
 
-  function evaluateParallelLevel({ components, graph, state }) {
+  function evaluateParallelLevel({ components, connections, graph, state }) {
     const battery = components.find((component) => component.id === "battery");
     const loads = components.filter((component) => component.id === "lamp" || component.id === "led");
     if (!battery) {
@@ -325,7 +452,6 @@
     loads.slice(0, 2).forEach((load) => {
       const entryPort = resolvePort(load.instanceId, load.id === "led" ? "anode" : "a");
       const exitPort = resolvePort(load.instanceId, load.id === "led" ? "cathode" : "b");
-
       if (hasPath(graph, batteryPositive, entryPort) && hasPath(graph, exitPort, batteryNegative)) {
         validBranches += 1;
       }
@@ -335,25 +461,23 @@
     const secondLoad = loads[1];
     const firstExit = resolvePort(firstLoad.instanceId, firstLoad.id === "led" ? "cathode" : "b");
     const secondEntry = resolvePort(secondLoad.instanceId, secondLoad.id === "led" ? "anode" : "a");
-    const seriesLike =
-      hasPath(graph, firstExit, secondEntry) &&
-      !hasPath(graph, batteryPositive, secondEntry);
+    const seriesLike = hasPath(graph, firstExit, secondEntry) && !hasPath(graph, batteryPositive, secondEntry);
 
     if (validBranches === 2) {
       addFinding(state, "两个负载都形成了各自通向电源负极的独立支路。");
     } else {
-      addIssue(state, "两个负载还没有都形成独立支路，当前结构不够像标准并联。", {
-        instances: loads.slice(0, 2).map((item) => item.instanceId)
-      });
+      addIssue(state, "两个负载还没有都形成独立支路，当前结构不够像标准并联。", markersFromPorts([
+        resolvePort(firstLoad.instanceId, firstLoad.id === "led" ? "anode" : "a"),
+        resolvePort(firstLoad.instanceId, firstLoad.id === "led" ? "cathode" : "b"),
+        resolvePort(secondLoad.instanceId, secondLoad.id === "led" ? "anode" : "a"),
+        resolvePort(secondLoad.instanceId, secondLoad.id === "led" ? "cathode" : "b")
+      ], connections));
     }
 
     if (!seriesLike) {
       addFinding(state, "没有检测到明显的串联首尾连接。");
     } else {
-      addIssue(state, "两个负载看起来被首尾串起来了，而不是并联。", {
-        instances: [firstLoad.instanceId, secondLoad.instanceId],
-        ports: [firstExit, secondEntry]
-      });
+      addIssue(state, "两个负载看起来被首尾串起来了，而不是并联。", markersFromPorts([firstExit, secondEntry], connections));
     }
   }
 
@@ -371,64 +495,275 @@
     const ledCathode = resolvePort(led.instanceId, "cathode");
     const resistorA = resolvePort(resistor.instanceId, "a");
     const resistorB = resolvePort(resistor.instanceId, "b");
-    const blockedNodes = new Set([resistorA, resistorB]);
 
-    const positiveToResistor =
-      hasPath(graph, batteryPositive, resistorA) ||
-      hasPath(graph, batteryPositive, resistorB);
-    const resistorToLed =
-      hasPath(graph, resistorA, ledAnode) ||
-      hasPath(graph, resistorB, ledAnode);
-    const ledBack = hasPath(graph, ledCathode, batteryNegative);
-    const bypassResistor = hasPath(graph, batteryPositive, ledAnode, blockedNodes);
+    const positiveToA = findPath(graph, batteryPositive, resistorA);
+    const positiveToB = findPath(graph, batteryPositive, resistorB);
+    const aToLed = findPath(graph, resistorA, ledAnode);
+    const bToLed = findPath(graph, resistorB, ledAnode);
+    const throughResistorPath = findSeriesPath(graph, batteryPositive, [[resistorA, resistorB]], ledAnode);
+    const ledBackPath = findPath(graph, ledCathode, batteryNegative);
+    const bypassPath = findPath(graph, batteryPositive, ledAnode, new Set([resistorA, resistorB]));
 
-    if (positiveToResistor) {
-      addFinding(state, "电池正极已经先接到电阻。");
+    const resistorAConnected = (graph[resistorA] || new Set()).size > 0;
+    const resistorBConnected = (graph[resistorB] || new Set()).size > 0;
+    const ledCathodeConnected = (graph[ledCathode] || new Set()).size > 0;
+
+    if (throughResistorPath) {
+      addFinding(state, "电阻已经正确串入 LED 主路径。");
+    } else if (!resistorAConnected && !resistorBConnected) {
+      addIssue(state, "电阻完全没有接入电路，两端都还是悬空的。", markersFromPorts([resistorA, resistorB], connections));
+    } else if (!positiveToA && !positiveToB) {
+      addIssue(
+        state,
+        "电池正极还没有先到电阻，主路径起点就错了。",
+        markersFromPorts([batteryPositive, resistorA, resistorB], connections)
+      );
+    } else if (!aToLed && !bToLed) {
+      addIssue(
+        state,
+        "电阻已经接到了主路径前半段，但它的另一端还没有接到 LED 正端。",
+        markersFromPorts([resistorA, resistorB, ledAnode], connections)
+      );
+    } else if (!resistorAConnected || !resistorBConnected) {
+      addIssue(
+        state,
+        "电阻只接入了一端，电流无法完整经过电阻再流向 LED。",
+        markersFromPorts([resistorA, resistorB, ledAnode], connections)
+      );
     } else {
-      addIssue(state, "电池正极还没有先连接到电阻。", {
-        instances: [battery.instanceId, resistor.instanceId],
-        ports: [batteryPositive, resistorA, resistorB]
-      });
+      addIssue(
+        state,
+        "电阻和 LED 的相对位置还不对，电阻没有形成稳定的串联保护结构。",
+        markersFromPorts([batteryPositive, resistorA, resistorB, ledAnode], connections)
+      );
     }
 
-    if (resistorToLed) {
-      addFinding(state, "电阻已经串到 LED 正端之前。");
+    if (ledBackPath) {
+      addFinding(state, "LED 负端已经回到电池负极。");
+    } else if (!ledCathodeConnected) {
+      addIssue(state, "LED 负端还没有接线，请把它接回电池负极。", markersFromPorts([ledCathode, batteryNegative], connections));
     } else {
-      addIssue(state, "还没有形成从电阻到 LED 正端的主路径。", {
-        instances: [resistor.instanceId, led.instanceId],
-        ports: [resistorA, resistorB, ledAnode]
-      });
+      addIssue(state, "LED 负端虽然有接线，但还没有真正回到电池负极。", markersFromPorts([ledCathode, batteryNegative], connections));
     }
 
-    if (ledBack) {
+    if (!bypassPath && throughResistorPath) {
+      addFinding(state, "没有发现绕过电阻直达 LED 的旁路。");
+    } else if (bypassPath) {
+      addIssue(
+        state,
+        "检测到存在绕过电阻的旁路：电池正极可以不经过电阻直接到 LED 正端，所以电阻没有真正承担保护作用。",
+        mergeMarkers(
+          markersFromPorts([batteryPositive, ledAnode, resistorA, resistorB], connections),
+          markersFromPath(bypassPath, connections)
+        )
+      );
+    }
+  }
+
+  function evaluateProtectedSwitchLevel({ components, connections, graph, state }) {
+    const battery = components.find((component) => component.id === "battery");
+    const sw = components.find((component) => component.id === "switch");
+    const resistor = components.find((component) => component.id === "resistor");
+    const led = components.find((component) => component.id === "led");
+    if (!battery || !sw || !resistor || !led) {
+      return;
+    }
+
+    const batteryPositive = resolvePort(battery.instanceId, "positive");
+    const batteryNegative = resolvePort(battery.instanceId, "negative");
+    const switchA = resolvePort(sw.instanceId, "a");
+    const switchB = resolvePort(sw.instanceId, "b");
+    const resistorA = resolvePort(resistor.instanceId, "a");
+    const resistorB = resolvePort(resistor.instanceId, "b");
+    const ledAnode = resolvePort(led.instanceId, "anode");
+    const ledCathode = resolvePort(led.instanceId, "cathode");
+
+    const orderedPath = findSeriesPath(
+      graph,
+      batteryPositive,
+      [
+        [switchA, switchB],
+        [resistorA, resistorB]
+      ],
+      ledAnode
+    );
+    const ledBackPath = findPath(graph, ledCathode, batteryNegative);
+    const bypassSwitchPath = findPath(graph, batteryPositive, ledAnode, new Set([switchA, switchB]));
+    const bypassResistorPath = findPath(graph, batteryPositive, ledAnode, new Set([resistorA, resistorB]));
+
+    if (orderedPath) {
+      addFinding(state, "开关和电阻都已经串入 LED 主回路。");
+    } else {
+      addIssue(
+        state,
+        "新任务还没有完成：需要把开关和电阻依次串入 LED 主回路。",
+        markersFromPorts([batteryPositive, switchA, switchB, resistorA, resistorB, ledAnode], connections)
+      );
+    }
+
+    if (ledBackPath) {
       addFinding(state, "LED 负端已经回到电池负极。");
     } else {
-      addIssue(state, "LED 负端还没有回到电池负极。", {
-        instances: [battery.instanceId, led.instanceId],
-        ports: [ledCathode, batteryNegative]
-      });
+      addIssue(state, "LED 负端还没有回到电池负极。", markersFromPorts([ledCathode, batteryNegative], connections));
     }
 
-    if (!bypassResistor && positiveToResistor && resistorToLed) {
-      addFinding(state, "没有发现绕过电阻直达 LED 的旁路。");
-    } else if (bypassResistor) {
-      addIssue(state, "检测到正极可以绕过电阻直接到 LED，电阻没有真正串入主回路。", {
-        instances: [battery.instanceId, resistor.instanceId, led.instanceId],
-        ports: [batteryPositive, ledAnode]
-      });
+    if (bypassSwitchPath) {
+      addIssue(
+        state,
+        "检测到存在绕过开关的旁路，开关失去了控制作用。",
+        mergeMarkers(
+          markersFromPorts([switchA, switchB, batteryPositive, ledAnode], connections),
+          markersFromPath(bypassSwitchPath, connections)
+        )
+      );
+    }
 
-      connections.forEach((connection) => {
-        const touchesLedAnode =
-          connection.from === ledAnode ||
-          connection.to === ledAnode;
-        const touchesBatteryPositive =
-          connection.from === batteryPositive ||
-          connection.to === batteryPositive;
+    if (bypassResistorPath) {
+      addIssue(
+        state,
+        "检测到存在绕过电阻的旁路，电阻失去了保护作用。",
+        mergeMarkers(
+          markersFromPorts([resistorA, resistorB, batteryPositive, ledAnode], connections),
+          markersFromPath(bypassResistorPath, connections)
+        )
+      );
+    }
 
-        if (touchesLedAnode || touchesBatteryPositive) {
-          state.errorConnections.add(connection.id);
-        }
-      });
+    if (!bypassSwitchPath && !bypassResistorPath && orderedPath && ledBackPath) {
+      addFinding(state, "没有发现绕过开关或电阻的旁路连接。");
+    }
+  }
+
+  function evaluateFuseLevel({ components, connections, graph, state }) {
+    const battery = components.find((component) => component.id === "battery");
+    const sw = components.find((component) => component.id === "switch");
+    const fuse = components.find((component) => component.id === "fuse");
+    const led = components.find((component) => component.id === "led");
+    const lamp = components.find((component) => component.id === "lamp");
+
+    if (!battery || !sw || !fuse) {
+      return;
+    }
+
+    const load = led || lamp;
+    if (!load) {
+      addIssue(state, "缺少负载元件：请放置一个 LED 或小灯泡作为负载。");
+      return;
+    }
+
+    const batteryPositive = resolvePort(battery.instanceId, "positive");
+    const batteryNegative = resolvePort(battery.instanceId, "negative");
+    const switchA = resolvePort(sw.instanceId, "a");
+    const switchB = resolvePort(sw.instanceId, "b");
+    const fuseA = resolvePort(fuse.instanceId, "a");
+    const fuseB = resolvePort(fuse.instanceId, "b");
+
+    const loadEntryPort = load.id === "led"
+      ? resolvePort(load.instanceId, "anode")
+      : resolvePort(load.instanceId, "a");
+    const loadExitPort = load.id === "led"
+      ? resolvePort(load.instanceId, "cathode")
+      : resolvePort(load.instanceId, "b");
+
+    const orderedPath = findSeriesPath(
+      graph,
+      batteryPositive,
+      [
+        [switchA, switchB],
+        [fuseA, fuseB]
+      ],
+      loadEntryPort
+    );
+
+    const loadBackPath = findPath(graph, loadExitPort, batteryNegative);
+    const bypassSwitchPath = findPath(graph, batteryPositive, loadEntryPort, new Set([switchA, switchB]));
+    const bypassFusePath = findPath(graph, batteryPositive, loadEntryPort, new Set([fuseA, fuseB]));
+
+    const fuseAConnected = (graph[fuseA] || new Set()).size > 0;
+    const fuseBConnected = (graph[fuseB] || new Set()).size > 0;
+    const loadExitConnected = (graph[loadExitPort] || new Set()).size > 0;
+
+    const positiveToFuseA = findPath(graph, batteryPositive, fuseA);
+    const positiveToFuseB = findPath(graph, batteryPositive, fuseB);
+    const fuseAToLoad = findPath(graph, fuseA, loadEntryPort);
+    const fuseBToLoad = findPath(graph, fuseB, loadEntryPort);
+
+    const loadType = load.id === "led" ? "LED" : "小灯泡";
+
+    if (orderedPath) {
+      addFinding(state, `开关和保险丝都已经串入 ${loadType} 主回路。`);
+    } else if (!fuseAConnected && !fuseBConnected) {
+      addIssue(
+        state,
+        "保险丝完全没有接入电路，两端都还是悬空的。",
+        markersFromPorts([fuseA, fuseB], connections)
+      );
+    } else if (!fuseAConnected || !fuseBConnected) {
+      addIssue(
+        state,
+        "保险丝只接入了一端，电流无法完整经过保险丝再流向负载。",
+        markersFromPorts([fuseA, fuseB, loadEntryPort], connections)
+      );
+    } else if (!positiveToFuseA && !positiveToFuseB) {
+      addIssue(
+        state,
+        "电池正极还没有先到保险丝，主路径起点就错了。",
+        markersFromPorts([batteryPositive, fuseA, fuseB], connections)
+      );
+    } else if (!fuseAToLoad && !fuseBToLoad) {
+      addIssue(
+        state,
+        "保险丝已经接到了主路径前半段，但它的另一端还没有接到负载。",
+        markersFromPorts([fuseA, fuseB, loadEntryPort], connections)
+      );
+    } else {
+      addIssue(
+        state,
+        `开关和保险丝与 ${loadType} 的相对位置还不对，没有形成稳定的串联保护结构。`,
+        markersFromPorts([batteryPositive, switchA, switchB, fuseA, fuseB, loadEntryPort], connections)
+      );
+    }
+
+    if (loadBackPath) {
+      addFinding(state, `${loadType} 负端已经回到电池负极。`);
+    } else if (!loadExitConnected) {
+      addIssue(
+        state,
+        `${loadType} 负端还没有接线，请把它接回电池负极。`,
+        markersFromPorts([loadExitPort, batteryNegative], connections)
+      );
+    } else {
+      addIssue(
+        state,
+        `${loadType} 负端虽然有接线，但还没有真正回到电池负极。`,
+        markersFromPorts([loadExitPort, batteryNegative], connections)
+      );
+    }
+
+    if (bypassSwitchPath) {
+      addIssue(
+        state,
+        "检测到存在绕过开关的旁路，开关失去了控制作用。",
+        mergeMarkers(
+          markersFromPorts([switchA, switchB, batteryPositive, loadEntryPort], connections),
+          markersFromPath(bypassSwitchPath, connections)
+        )
+      );
+    }
+
+    if (bypassFusePath) {
+      addIssue(
+        state,
+        "检测到存在绕过保险丝的旁路：电池正极可以不经过保险丝直接到负载，所以保险丝没有真正承担保护作用。",
+        mergeMarkers(
+          markersFromPorts([fuseA, fuseB, batteryPositive, loadEntryPort], connections),
+          markersFromPath(bypassFusePath, connections)
+        )
+      );
+    }
+
+    if (!bypassSwitchPath && !bypassFusePath && orderedPath && loadBackPath) {
+      addFinding(state, "没有发现绕过开关或保险丝的旁路连接。");
     }
   }
 
@@ -439,7 +774,8 @@
       switch: "开关",
       wire: "导线",
       lamp: "小灯泡",
-      resistor: "电阻"
+      resistor: "电阻",
+      fuse: "保险丝"
     };
 
     return map[componentId] || componentId;

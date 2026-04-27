@@ -219,6 +219,39 @@ window.CIRCUIT_DATA = {
       starterComponents: ["battery", "resistor", "led", "wire", "wire", "wire"],
       successText: "你已经把电阻正确串入 LED 主回路，形成了更合理的保护结构。",
       objective: "resistor-protects-led"
+    },
+    {
+      id: "level-5",
+      title: "第 5 关 用开关控制带保护电阻的 LED",
+      description: "在上一关的保护电阻结构里再串入开关，让开关负责控制，电阻继续承担保护作用。",
+      goals: [
+        "包含电池、开关、电阻和 LED",
+        "主路径要依次经过开关和电阻，再到 LED 正端",
+        "LED 负端最终回到电池负极",
+        "不能绕过开关，也不能绕过电阻"
+      ],
+      requiredTypes: ["battery", "switch", "resistor", "led"],
+      recommendedTypes: ["wire"],
+      starterComponents: ["battery", "switch", "resistor", "led", "wire", "wire", "wire", "wire"],
+      successText: "你已经把开关和保护电阻都正确串入了 LED 主回路。",
+      objective: "switch-protects-led"
+    },
+    {
+      id: "level-6",
+      title: "第 6 关 用保险丝保护负载回路",
+      description: "搭一个包含开关、保险丝和负载的安全回路，理解保险丝作为保护元件必须串入主路径。",
+      goals: [
+        "包含电池、开关、保险丝和负载（LED 或小灯泡）",
+        "从电池正极到负载的主路径必须依次经过开关和保险丝",
+        "负载负端最终回到电池负极形成闭合回路",
+        "不能存在绕过保险丝的旁路连接",
+        "保险丝两端必须都接入电路，不能只接一端"
+      ],
+      requiredTypes: ["battery", "switch", "fuse"],
+      recommendedTypes: ["wire", "led", "lamp"],
+      starterComponents: ["battery", "switch", "fuse", "led", "wire", "wire", "wire", "wire", "wire"],
+      successText: "你已经把保险丝正确串入了安全回路，保险丝现在可以承担过载保护作用。",
+      objective: "fuse-protects-load"
     }
   ]
 };
